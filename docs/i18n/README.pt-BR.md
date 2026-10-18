@@ -4,9 +4,11 @@
 
 # AEmulator
 
+*Based on the original [SENSES emulator](https://github.com/Istratii-tech/SENSES)*
+
 **Firmwares clássicos do Android — HTC Sense, TouchWiz, MIUI, AOSP — em um celular moderno. Sem root, sem PC.**
 
-[![Version](https://img.shields.io/badge/version-0.0.0.2-3D5AFE?style=for-the-badge)](https://github.com/uxazu/aemulator/releases) [![License](https://img.shields.io/badge/license-GPL--3.0-3D5AFE?style=for-the-badge)](../../LICENSE) [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/uxazu/aemulator) [![Forum](https://img.shields.io/badge/Forum-aeforum-FF6D00?style=for-the-badge&logo=discourse&logoColor=white)](https://aeforum.uxazuu.space/) [![Telegram](https://img.shields.io/badge/Telegram-channel-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/aemulatorofficial) [![Website](https://img.shields.io/badge/site-aemulator.gt.tc-111?style=for-the-badge)](https://aemulator.gt.tc)
+[![Version](https://img.shields.io/badge/version-0.0.0.3-3D5AFE?style=for-the-badge)](https://github.com/uxazu/aemulator/releases) [![License](https://img.shields.io/badge/license-GPL--3.0-3D5AFE?style=for-the-badge)](../../LICENSE) [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/uxazu/aemulator) [![Forum](https://img.shields.io/badge/Forum-aeforum-FF6D00?style=for-the-badge&logo=discourse&logoColor=white)](https://aeforum.uxazuu.space/) [![Telegram](https://img.shields.io/badge/Telegram-channel-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/aemulatorofficial) [![Website](https://img.shields.io/badge/site-aemulator.gt.tc-111?style=for-the-badge)](https://aemulator.gt.tc)
 
 [🇬🇧 English](../../README.md) · [🇷🇺 Русский](README.ru.md) · [🇺🇦 Українська](README.uk.md) · [🇩🇪 Deutsch](README.de.md) · [🇫🇷 Français](README.fr.md) · [🇪🇸 Español](README.es.md) · **🇧🇷 Português** · [🇮🇹 Italiano](README.it.md) · [🇵🇱 Polski](README.pl.md) · [🇹🇷 Türkçe](README.tr.md) · [🇸🇦 العربية](README.ar.md) · [🇮🇷 فارسی](README.fa.md) · [🇮🇳 हिन्दी](README.hi.md) · [🇮🇩 Indonesia](README.id.md) · [🇻🇳 Tiếng Việt](README.vi.md) · [🇨🇳 简体中文](README.zh-CN.md) · [🇯🇵 日本語](README.ja.md) · [🇰🇷 한국어](README.ko.md)
 
@@ -14,7 +16,7 @@
 
 ---
 
-O AEmulator inicia um sistema Android 2.3–7.x real direto de um arquivo de firmware: ZIP de recovery, pacote do Odin ou imagem de fábrica do Google. O código ARM antigo é traduzido por um QEMU modificado, o binder do kernel é emulado, os gráficos usam a GPU do celular e o som passa pelo áudio do Android — tudo dentro de um app comum.
+O AEmulator inicia um sistema Android 2.3–17 real direto de um arquivo de firmware: ZIP de recovery, pacote do Odin ou imagem de fábrica do Google ou GSI. Firmwares antigos de 32 bits (2.3–4.4) passam por um QEMU modificado, o Android 5.0–17 roda nativamente nos núcleos arm64 do celular; o binder do kernel é emulado, os gráficos usam a GPU do celular e o som passa pelo áudio do Android — tudo dentro de um app comum.
 
 ## ✨ Recursos
 
@@ -51,7 +53,7 @@ A lista de firmwares verificados — com status, notas e links de download — f
 
 ## ⚙️ Como funciona
 
-Cada processo convidado roda num QEMU de modo usuário modificado. Um daemon binder substitui o driver do kernel, uma ponte GL envia as chamadas OpenGL ES para a GPU e pequenas bibliotecas (HAL de áudio, wrapper de audio policy, shim LD_PRELOAD) adaptam o código das fabricantes ao emulador. O importador lê o firmware, acha os scripts init na imagem boot e monta o plano de início dos serviços.
+No Android 2.3–4.4 cada processo convidado roda num QEMU de modo usuário modificado; no 5.0–17 os programas arm64 do firmware rodam nativamente e um núcleo do motor próprio para cada versão do Android intercepta as chamadas de sistema. Um daemon binder substitui o driver do kernel, uma ponte GL envia as chamadas OpenGL ES para a GPU e pequenas bibliotecas (HAL de áudio, wrapper de audio policy, shim LD_PRELOAD) adaptam o código das fabricantes ao emulador. O importador lê o firmware, acha os scripts init na imagem boot e monta o plano de início dos serviços.
 
 ## 🛠️ Compilar do código-fonte
 
@@ -65,7 +67,7 @@ cd aemulator
 
 ## 🙏 Créditos
 
-O AEmulator nasceu dos emuladores de HTC Desire HD e HTC One M7 do [autor original](https://t.me/istratiit_ech) — sem o motor dele este projeto não existiria.
+O AEmulator nasceu dos emuladores de HTC Desire HD e HTC One M7 do [autor original](https://t.me/istratii_tech1) — sem o motor dele este projeto não existiria.
 
 ## 💙 Apoie o projeto
 
@@ -79,7 +81,7 @@ Se o AEmulator trouxe de volta um celular querido, você pode apoiar o desenvolv
 - 💬 Fórum: [aeforum.uxazuu.space](https://aeforum.uxazuu.space/)
 - 📣 Canal no Telegram: [@aemulatorofficial](https://t.me/aemulatorofficial)
 - 👤 Autor: [uxazu](https://github.com/uxazu)
-- 🧬 Autor original: [t.me/istratiit_ech](https://t.me/istratiit_ech)
+- 🧬 Autor original: [t.me/istratii_tech1](https://t.me/istratii_tech1)
 
 ## 📄 Licença
 

@@ -4,9 +4,11 @@
 
 # AEmulator
 
+*Based on the original [SENSES emulator](https://github.com/Istratii-tech/SENSES)*
+
 **Старі прошивки Android — HTC Sense, TouchWiz, MIUI, AOSP — на сучасному телефоні. Без root і без ПК.**
 
-[![Version](https://img.shields.io/badge/version-0.0.0.2-3D5AFE?style=for-the-badge)](https://github.com/uxazu/aemulator/releases) [![License](https://img.shields.io/badge/license-GPL--3.0-3D5AFE?style=for-the-badge)](../../LICENSE) [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/uxazu/aemulator) [![Forum](https://img.shields.io/badge/Forum-aeforum-FF6D00?style=for-the-badge&logo=discourse&logoColor=white)](https://aeforum.uxazuu.space/) [![Telegram](https://img.shields.io/badge/Telegram-channel-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/aemulatorofficial) [![Website](https://img.shields.io/badge/site-aemulator.gt.tc-111?style=for-the-badge)](https://aemulator.gt.tc)
+[![Version](https://img.shields.io/badge/version-0.0.0.3-3D5AFE?style=for-the-badge)](https://github.com/uxazu/aemulator/releases) [![License](https://img.shields.io/badge/license-GPL--3.0-3D5AFE?style=for-the-badge)](../../LICENSE) [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/uxazu/aemulator) [![Forum](https://img.shields.io/badge/Forum-aeforum-FF6D00?style=for-the-badge&logo=discourse&logoColor=white)](https://aeforum.uxazuu.space/) [![Telegram](https://img.shields.io/badge/Telegram-channel-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/aemulatorofficial) [![Website](https://img.shields.io/badge/site-aemulator.gt.tc-111?style=for-the-badge)](https://aemulator.gt.tc)
 
 [🇬🇧 English](../../README.md) · [🇷🇺 Русский](README.ru.md) · **🇺🇦 Українська** · [🇩🇪 Deutsch](README.de.md) · [🇫🇷 Français](README.fr.md) · [🇪🇸 Español](README.es.md) · [🇧🇷 Português](README.pt-BR.md) · [🇮🇹 Italiano](README.it.md) · [🇵🇱 Polski](README.pl.md) · [🇹🇷 Türkçe](README.tr.md) · [🇸🇦 العربية](README.ar.md) · [🇮🇷 فارسی](README.fa.md) · [🇮🇳 हिन्दी](README.hi.md) · [🇮🇩 Indonesia](README.id.md) · [🇻🇳 Tiếng Việt](README.vi.md) · [🇨🇳 简体中文](README.zh-CN.md) · [🇯🇵 日本語](README.ja.md) · [🇰🇷 한국어](README.ko.md)
 
@@ -14,7 +16,7 @@
 
 ---
 
-AEmulator завантажує справжню систему Android 2.3–7.x прямо з файлу прошивки: ZIP для рекавері, архіву Odin або factory-образу Google. Старий ARM-код транслює доопрацьований QEMU, binder ядра емулюється, графіка йде через GPU телефона, звук — через аудіосистему Android. Усе працює всередині звичайного застосунку.
+AEmulator завантажує справжню систему Android 2.3–17 прямо з файлу прошивки: ZIP для рекавері, архіву Odin або factory-образу Google, а також GSI. Старі 32-бітні прошивки (2.3–4.4) йдуть через доопрацьований QEMU, Android 5.0–17 — нативно на arm64-ядрах телефона; binder ядра емулюється, графіка йде через GPU телефона, звук — через аудіосистему Android. Усе працює всередині звичайного застосунку.
 
 ## ✨ Можливості
 
@@ -51,7 +53,7 @@ AEmulator завантажує справжню систему Android 2.3–7.x
 
 ## ⚙️ Як це влаштовано
 
-Кожен процес гостя працює під доопрацьованим QEMU в режимі користувача. Демон binder замінює драйвер ядра, GL-міст передає виклики OpenGL ES на GPU телефона, а невеликі гостьові бібліотеки (звуковий HAL, обгортка audio policy, прошарок LD_PRELOAD) підлаштовують код виробників під емулятор. Імпортер читає прошивку, знаходить init-скрипти в boot-образі й будує план запуску системних служб.
+На Android 2.3–4.4 кожен процес гостя працює під доопрацьованим QEMU в режимі користувача; на 5.0–17 власні arm64-програми прошивки працюють напряму, а їхні системні виклики перехоплює окреме ядро рушія для кожної версії Android. Демон binder замінює драйвер ядра, GL-міст передає виклики OpenGL ES на GPU телефона, а невеликі гостьові бібліотеки (звуковий HAL, обгортка audio policy, прошарок LD_PRELOAD) підлаштовують код виробників під емулятор. Імпортер читає прошивку, знаходить init-скрипти в boot-образі й будує план запуску системних служб.
 
 ## 🛠️ Збирання з вихідного коду
 
@@ -65,7 +67,7 @@ cd aemulator
 
 ## 🙏 Подяки
 
-AEmulator виріс з емуляторів HTC Desire HD та HTC One M7 [першого автора](https://t.me/istratiit_ech) — без його рушія проєкту б не було.
+AEmulator виріс з емуляторів HTC Desire HD та HTC One M7 [першого автора](https://t.me/istratii_tech1) — без його рушія проєкту б не було.
 
 ## 💙 Підтримати проєкт
 
@@ -79,7 +81,7 @@ AEmulator виріс з емуляторів HTC Desire HD та HTC One M7 [пе
 - 💬 Форум: [aeforum.uxazuu.space](https://aeforum.uxazuu.space/)
 - 📣 Telegram-канал: [@aemulatorofficial](https://t.me/aemulatorofficial)
 - 👤 Автор: [uxazu](https://github.com/uxazu)
-- 🧬 Перший автор: [t.me/istratiit_ech](https://t.me/istratiit_ech)
+- 🧬 Перший автор: [t.me/istratii_tech1](https://t.me/istratii_tech1)
 
 ## 📄 Ліцензія
 

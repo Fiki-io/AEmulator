@@ -28,7 +28,7 @@ S = {
     "start": "Start",
     "rename": "Rename",
     "help_title": "Supported firmware",
-    "help_text": "• Android 2.3 and 4.0–4.4: main support; 5.x–6.x: experimental.\n• 32-bit ARM firmware only (armeabi / armeabi-v7a).\n\nFormats:\n• CWM/TWRP recovery ZIP (MIUI, CyanogenMod, ports, most custom ROMs);\n• Samsung: Odin .tar / .tar.md5 or a ZIP with AP_*.tar.md5;\n• Google factory images (.tgz / .zip);\n• system.img (ext4, sparse), TWRP backup system.ext4.win;\n• OTA with system.new.dat(.br) + system.transfer.list.\n\nBest if the archive contains boot.img: the service start order is taken from it.",
+    "help_text": "• Android 2.3–4.4: 32-bit ARM firmware, runs through QEMU.\n• Android 5.0–17: arm64 firmware and GSIs, run natively on the phone.\n\nFormats:\n• CWM/TWRP recovery ZIP (MIUI, CyanogenMod, ports, most custom ROMs);\n• Samsung: Odin .tar / .tar.md5 or a ZIP with AP_*.tar.md5;\n• Google factory images (.tgz / .zip);\n• system.img (ext4, sparse), TWRP backup system.ext4.win;\n• OTA with system.new.dat(.br) + system.transfer.list.\n\nBest if the archive contains boot.img: the service start order is taken from it.",
     "vs_screen": "Guest screen",
     "vs_fixed_2x": "Android 2.x uses a fixed 480×800 screen at 240 dpi.",
     "vs_screen_hint": "A smaller screen makes the system faster.",

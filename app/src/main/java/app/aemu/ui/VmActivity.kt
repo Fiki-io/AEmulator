@@ -5,8 +5,15 @@ import androidx.compose.ui.res.stringResource
 import android.annotation.SuppressLint
 import android.content.Context
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.rounded.BatteryStd
+import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.ContentPaste
@@ -17,6 +24,11 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sms
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Lan
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Gamepad
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
@@ -62,6 +74,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -126,8 +140,22 @@ class VmActivity : ComponentActivity() {
     private lateinit var vm: GuestVm
     private lateinit var surfaceView: SurfaceView
     private lateinit var guest: GuestScreen
+    /** the guest's screen size, for what takes frames off it (VNC, recording) */
+    private var guestW = 0
+    private var guestH = 0
+    private var vnc: app.aemu.core.VncServer? = null
+    private var recorder: app.aemu.core.ScreenRecorder? = null
+    private val vncOn = androidx.compose.runtime.mutableStateOf(false)
+    private val recOn = androidx.compose.runtime.mutableStateOf(false)
+    private val grabThread by lazy { android.os.HandlerThread("frame-grab").apply { start() } }
+    private var grabScratch: android.graphics.Bitmap? = null
     private lateinit var box: FrameLayout
     private var state by mutableStateOf(GuestVm.State.STOPPED)
+    /** the guest's notification LED and where the guest screen starts (the LED sits just above it) */
+    private var led by mutableStateOf<app.aemu.core.Lights.Led?>(null)
+    /** this system's setting "Notification light" (the settings sheet changes it while the system runs) */
+    private var showLed by mutableStateOf(true)
+    private var guestTopPx by mutableStateOf(0)
     private val logLines = mutableStateListOf<String>()
 
     @SuppressLint("ClickableViewAccessibility")
@@ -135,6 +163,8 @@ class VmActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // the overlay pads itself (status bar, navigation bar, keyboard): the terminal stays above the keyboard
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         val id = intent.getStringExtra(EXTRA_ID)
         val cur = VmHost.vm
         val img = ((if (id != null) ImageStore.get(this, id) else null) ?: cur?.img)
@@ -150,6 +180,7 @@ class VmActivity : ComponentActivity() {
             else GuestVm(applicationContext, img).also { it.recoveryMode = intent.getBooleanExtra(EXTRA_RECOVERY, false); VmHost.vm = it }
         vm.onPower = { reboot, reason -> runOnUiThread { if (reboot) rebootVm(reason == "recovery") else stopVm() } }
         val s = vm.settings
+        showLed = s.showLed
         if (s.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val (gw, gh) = if (vm.engine == Engine.GB) 480 to 800 else s.width to s.height
@@ -161,6 +192,7 @@ class VmActivity : ComponentActivity() {
             override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) { vm.surface = h.surface }
             override fun surfaceDestroyed(h: SurfaceHolder) { vm.surface = null }
         })
+        guestW = gw; guestH = gh
         guest = GuestScreen(this, gw, gh).apply {
             input = vm.input
             fb = if (vm.recoveryMode) app.aemu.core.RecoveryImage.fb(vm.paths) else vm.paths.fb
@@ -168,7 +200,11 @@ class VmActivity : ComponentActivity() {
         }
         // 5.0+ renders through the standalone glserverd into fb0 (see GuestVm.glUp), shown like the software path
         val useBridge = vm.engine == Engine.KK && s.gpu && !vm.recoveryMode && vm.img.api < 21
-        surfaceView.visibility = if (useBridge) View.VISIBLE else View.GONE
+        // the arm64 engine's GLES bridge shows SurfaceFlinger's frames in the same view, straight from the GPU; until
+        // the first of them (and with the software renderer) the screen is fb0 as before
+        val direct = vm.engine == Engine.N64 && vm.kernel.gpuBridge64 && s.gpu && !vm.recoveryMode
+        if (direct) { surfaceView.holder.setFixedSize(gw, gh); guest.direct = { app.aemu.core.GlHost.presented() } }
+        surfaceView.visibility = if (useBridge || direct) View.VISIBLE else View.GONE
         guest.passthrough = useBridge
         box.addView(surfaceView, FrameLayout.LayoutParams(-1, -1))
         box.addView(guest, FrameLayout.LayoutParams(-1, -1))
@@ -178,20 +214,31 @@ class VmActivity : ComponentActivity() {
         setContentView(root)
 
         // экран гостя вписываем с сохранением пропорций над панелью кнопок
-        val navDp = if (s.showNavBar) 64 else 0
+        val navDp = if (!s.showNavBar) 0 else if (s.navSize == 0) 46 else 64
+        // the window draws edge to edge (for the overlay's keyboard padding): the guest screen keeps out of the
+        // camera cutout and system bars; the keyboard is not counted, so the screen does not jump when it opens
+        var safeTop = 0
+        var safeBottom = 0
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { v, ins ->
+            val bars = ins.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            if (bars.top != safeTop || bars.bottom != safeBottom) { safeTop = bars.top; safeBottom = bars.bottom; v.requestLayout() }
+            ins
+        }
         root.addOnLayoutChangeListener { v, l, t, r, b, _, _, _, _ ->
             val navPx = (navDp * resources.displayMetrics.density).toInt()
             val aw = r - l
-            val ah = b - t - navPx
+            val ah = b - t - navPx - safeTop - safeBottom
             if (aw <= 0 || ah <= 0) return@addOnLayoutChangeListener
             val scale = minOf(aw.toFloat() / gw, ah.toFloat() / gh)
             val w = (gw * scale).toInt()
             val h = (gh * scale).toInt()
             val lp = box.layoutParams as FrameLayout.LayoutParams
-            if (lp.width != w || lp.height != h) {
+            val top = safeTop + (ah - h) / 2
+            if (guestTopPx != top) guestTopPx = top
+            if (lp.width != w || lp.height != h || lp.topMargin != top) {
                 lp.width = w; lp.height = h
                 lp.gravity = Gravity.CENTER_HORIZONTAL or Gravity.TOP
-                lp.topMargin = (ah - h) / 2
+                lp.topMargin = top
                 v.post { box.layoutParams = lp }
             }
         }
@@ -200,6 +247,10 @@ class VmActivity : ComponentActivity() {
         state = vm.state
         logLines.addAll(vm.lines().takeLast(200))
         vm.onState { st -> runOnUiThread { state = st } }
+        vm.mic.onPermissionNeeded = { runOnUiThread { askMic.launch(android.Manifest.permission.RECORD_AUDIO) } }
+        vm.camera.onPermissionNeeded = { runOnUiThread { askCamera.launch(android.Manifest.permission.CAMERA) } }
+        led = vm.lights.current
+        vm.lights.onChange { l -> runOnUiThread { led = l } }
         vm.onLog { line -> runOnUiThread { logLines.add(line); if (logLines.size > 400) logLines.removeRange(0, logLines.size - 400) } }
         guest.start()
         loadMenuOffset()
@@ -230,6 +281,14 @@ class VmActivity : ComponentActivity() {
                             Thread.sleep(150)
                         }
                     }
+                    return
+                }
+                i.getStringExtra("sms")?.let { sendSms("+15550001234", it); return }
+                if (i.getBooleanExtra("shot", false)) { runOnUiThread { screenshot() }; return }
+                // --ez frames true --es out <name>: the count of frames shown and the clock, for the testers
+                if (i.getBooleanExtra("frames", false)) {
+                    val name = i.getStringExtra("out")?.takeIf { it.matches(Regex("[A-Za-z0-9_.-]+")) } ?: "frames.out"
+                    java.io.File(vm.paths.bin, name).writeText("shown=${guest.shown} direct=${guest.passthrough} ms=${android.os.SystemClock.uptimeMillis()}\n")
                     return
                 }
                 if (i.hasExtra("adb")) { if (i.getBooleanExtra("adb", false)) vm.adb.start() else vm.adb.stop(); return }
@@ -268,7 +327,19 @@ class VmActivity : ComponentActivity() {
         else -> null
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::vm.isInitialized) vm.sensors.resume(true)
+    }
+
+    override fun onPause() {
+        if (::vm.isInitialized) vm.sensors.resume(false)
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        vnc?.stop(); vnc = null
+        recorder?.let { r -> thread { r.stop() } }; recorder = null
         if (::guest.isInitialized) guest.stop()
         shellRx?.let { runCatching { unregisterReceiver(it) } }
         super.onDestroy()
@@ -293,6 +364,10 @@ class VmActivity : ComponentActivity() {
     private fun loadMenuOffset() { menuOffset = Offset(uiPrefs.getFloat("menu_x", 0f), uiPrefs.getFloat("menu_y", 0f)) }
     private fun saveMenuOffset() { uiPrefs.edit().putFloat("menu_x", menuOffset.x).putFloat("menu_y", menuOffset.y).apply() }
 
+    private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) vm.mic.permissionGranted() }
+
+    private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     private fun toast(msg: String) = runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
 
     private fun guestAsync(cmd: String, done: ((String) -> Unit)? = null) {
@@ -305,16 +380,107 @@ class VmActivity : ComponentActivity() {
     private fun pasteToGuest() {
         val text = getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
         if (text.isEmpty()) { toast(getString(R.string.m_clip_empty)); return }
-        // `input text` treats spaces as separators; %s is its escape for a space
-        guestAsync("input text " + q(text.replace(" ", "%s")))
+        // Normalize line endings and truncate extreme paste payloads
+        val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val safeLines = if (lines.size > 150) lines.take(150) else lines
+        val script = buildString {
+            for ((i, line) in safeLines.withIndex()) {
+                if (line.isNotEmpty()) {
+                    val escaped = line.replace(" ", "%s")
+                    append("input text ").append(q(escaped)).append("; ")
+                }
+                if (i < safeLines.lastIndex) {
+                    append("input keyevent 66; ")
+                }
+            }
+        }
+        guestAsync(script)
     }
 
+    /**
+     * The frame is taken on the host (the fb0 copy, or the GPU bridge's surface through PixelCopy): `screencap` does
+     * not exist before 4.0 and cannot read the bridge's frames. The PNG lands in the guest's Pictures folder.
+     */
     private fun screenshot() {
         val name = "aemu-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date()) + ".png"
-        val dir = vm.img.sdcardPath.trimEnd('/') + "/Pictures"
-        guestAsync("mkdir -p $dir; screencap -p $dir/$name && echo OK") { out ->
-            toast(if (out.contains("OK")) getString(R.string.m_screenshot_saved, "$dir/$name") else getString(R.string.m_failed))
+        val hostDir = app.aemu.core.Sdcard.hostDir(vm.paths)?.let { java.io.File(it, "Pictures") }
+        if (hostDir == null) { toast(getString(R.string.m_failed)); return }
+        fun save(b: android.graphics.Bitmap) = thread {
+            val ok = runCatching {
+                hostDir.mkdirs()
+                java.io.File(hostDir, name).outputStream().use { b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            }.isSuccess
+            toast(if (ok) getString(R.string.m_screenshot_saved, vm.img.sdcardPath.trimEnd('/') + "/Pictures/$name") else getString(R.string.m_failed))
+            // the guest's media scanner picks the file up for its gallery
+            if (ok) guestAsync("am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://${vm.img.sdcardPath.trimEnd('/')}/Pictures/$name")
         }
+        guest.snapshot()?.let { save(it); return }
+        if (surfaceView.width <= 0 || surfaceView.height <= 0) { toast(getString(R.string.m_failed)); return }
+        val b = android.graphics.Bitmap.createBitmap(surfaceView.width, surfaceView.height, android.graphics.Bitmap.Config.ARGB_8888)
+        android.view.PixelCopy.request(surfaceView, b, { r ->
+            if (r == android.view.PixelCopy.SUCCESS) save(b) else toast(getString(R.string.m_failed))
+        }, android.os.Handler(mainLooper))
+    }
+
+    /**
+     * The current frame at the guest's resolution: the fb0 copy, or the GPU bridge's surface through PixelCopy
+     * (waited for here, so not to be called on the main thread).
+     */
+    private fun grabFrame(into: android.graphics.Bitmap): Boolean {
+        val dst = android.graphics.Rect(0, 0, into.width, into.height)
+        guest.snapshot()?.let { android.graphics.Canvas(into).drawBitmap(it, null, dst, null); it.recycle(); return true }
+        val sw = surfaceView.width
+        val sh = surfaceView.height
+        if (sw <= 0 || sh <= 0 || !surfaceView.holder.surface.isValid) return false
+        val tmp = grabScratch?.takeIf { it.width == sw && it.height == sh }
+            ?: android.graphics.Bitmap.createBitmap(sw, sh, android.graphics.Bitmap.Config.ARGB_8888).also { grabScratch = it }
+        val done = java.util.concurrent.CountDownLatch(1)
+        var ok = false
+        runCatching {
+            android.view.PixelCopy.request(surfaceView, tmp, { r -> ok = r == android.view.PixelCopy.SUCCESS; done.countDown() },
+                android.os.Handler(grabThread.looper))
+        }.onFailure { return false }
+        if (!done.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) || !ok) return false
+        android.graphics.Canvas(into).drawBitmap(tmp, null, dst, null)
+        return true
+    }
+
+    /** VNC on/off. Each session gets a password of its own, shown here and in the log. */
+    private fun toggleVnc() {
+        vnc?.let { it.stop(); vnc = null; vncOn.value = false; return }
+        if (guestW <= 0 || guestH <= 0) { toast(getString(R.string.m_failed)); return }
+        val password = (1..8).map { "abcdefghijkmnpqrstuvwxyz23456789".random() }.joinToString("")
+        val bmp = android.graphics.Bitmap.createBitmap(guestW, guestH, android.graphics.Bitmap.Config.ARGB_8888)
+        val server = app.aemu.core.VncServer(app.aemu.core.VncServer.DEFAULT_PORT, password, guestW, guestH, vm.img.name,
+            { px -> if (grabFrame(bmp)) { bmp.getPixels(px, 0, guestW, 0, 0, guestW, guestH); true } else false }, vm.input, vm::log)
+        if (!server.start()) { toast(getString(R.string.m_failed)); return }
+        vnc = server; vncOn.value = true
+        val ip = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().asSequence().filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.asSequence() }.firstOrNull { it is java.net.Inet4Address }?.hostAddress
+        }.getOrNull() ?: "127.0.0.1"
+        val where = getString(R.string.m_vnc_started, "$ip:${app.aemu.core.VncServer.DEFAULT_PORT}", password)
+        vm.log("vnc: $where")
+        runOnUiThread { Toast.makeText(this, where, Toast.LENGTH_LONG).show() }
+    }
+
+    /** Screen recording on/off: an MP4 in the Movies folder of the guest's card (the phone's shared folder). */
+    private fun toggleRecording() {
+        recorder?.let { r ->
+            recorder = null; recOn.value = false
+            thread {
+                r.stop()
+                toast(getString(R.string.m_screenshot_saved, vm.img.sdcardPath.trimEnd('/') + "/Movies/" + r.file.name))
+                guestAsync("am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://${vm.img.sdcardPath.trimEnd('/')}/Movies/${r.file.name}")
+            }
+            return
+        }
+        val dir = app.aemu.core.Sdcard.hostDir(vm.paths)?.let { java.io.File(it, "Movies") }
+        if (dir == null || guestW <= 0 || guestH <= 0) { toast(getString(R.string.m_failed)); return }
+        val name = "aemu-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date()) + ".mp4"
+        val r = app.aemu.core.ScreenRecorder(java.io.File(dir, name), guestW, guestH, ::grabFrame, vm::log)
+        if (!r.start()) { toast(getString(R.string.m_failed)); return }
+        recorder = r; recOn.value = true
     }
 
     // APK picked on the host: copied into the shared card folder, then installed by the guest's package manager
@@ -329,12 +495,15 @@ class VmActivity : ComponentActivity() {
             }.isSuccess
             if (!ok) { toast(getString(R.string.m_failed)); return@thread }
             val out = runCatching { vm.guestShell("pm install -r " + vm.img.sdcardPath.trimEnd('/') + "/aemu-install.apk", 300_000) }.getOrElse { it.toString() }
+            runCatching { app.aemu.core.TreeFixer(this@VmActivity, vm.paths, vm.img, vm::log).seedOwners() }
             toast(out.trim().lines().lastOrNull { it.isNotBlank() }?.take(200) ?: getString(R.string.m_failed))
         }
     }
 
     private fun sendSms(from: String, body: String) {
-        // no live modem: the message is written straight into the SMS provider inbox
+        // through the emulated modem: stored, notified and rung like a real SMS on every version
+        if (vm.ril.sms(from, body)) { toast(getString(R.string.m_sms_sent)); return }
+        // radio emulation off: the message is written straight into the SMS provider inbox (4.1+)
         val cmd = "content insert --uri content://sms/inbox --bind address:s:${q(from)} --bind body:s:${q(body)} " +
             "--bind read:i:0 --bind date:l:${System.currentTimeMillis()}"
         guestAsync(cmd) { out -> toast(if (out.isBlank()) getString(R.string.m_sms_sent) else out.trim().take(200)) }
@@ -360,6 +529,14 @@ class VmActivity : ComponentActivity() {
     private fun DeviceDialog(onDone: () -> Unit) {
         var airplane by remember { mutableStateOf(false) }
         var awake by remember { mutableStateOf(false) }
+        val ns = if (vm.img.api >= 17) "global" else "system"
+        // the switches show what the guest has now
+        LaunchedEffect(Unit) {
+            guestAsync("settings get $ns airplane_mode_on; settings get $ns stay_on_while_plugged_in") { out ->
+                val v = out.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                runOnUiThread { airplane = v.getOrNull(0) == "1"; awake = (v.getOrNull(1)?.toIntOrNull() ?: 0) != 0 }
+            }
+        }
         AlertDialog(onDismissRequest = onDone,
             title = { Text(stringResource(R.string.m_device)) },
             text = {
@@ -368,7 +545,7 @@ class VmActivity : ComponentActivity() {
                         Text(stringResource(R.string.m_airplane), Modifier.weight(1f))
                         Switch(airplane, { v ->
                             airplane = v
-                            guestAsync("settings put global airplane_mode_on ${if (v) 1 else 0}; " +
+                            guestAsync("settings put $ns airplane_mode_on ${if (v) 1 else 0}; " +
                                 "am broadcast -a android.intent.action.AIRPLANE_MODE --ez state $v")
                         })
                     }
@@ -376,7 +553,7 @@ class VmActivity : ComponentActivity() {
                         Text(stringResource(R.string.m_stay_awake), Modifier.weight(1f))
                         Switch(awake, { v ->
                             awake = v
-                            guestAsync("settings put global stay_on_while_plugged_in ${if (v) 7 else 0}; svc power stayon ${if (v) "true" else "false"}")
+                            guestAsync("settings put $ns stay_on_while_plugged_in ${if (v) 7 else 0}; svc power stayon ${if (v) "true" else "false"}")
                         })
                     }
                 }
@@ -424,6 +601,24 @@ class VmActivity : ComponentActivity() {
     private fun BatteryDialog(onDone: () -> Unit) {
         var level by remember { mutableStateOf(80f) }
         var charging by remember { mutableStateOf(true) }
+        // start from the guest's own battery state (sysfs or dumpsys)
+        LaunchedEffect(Unit) {
+            val cmd = "cat /sys/class/power_supply/battery/capacity 2>/dev/null; " +
+                "cat /sys/class/power_supply/ac/online 2>/dev/null; " +
+                "dumpsys battery 2>/dev/null"
+            guestAsync(cmd) { out ->
+                val lines = out.lines().map { it.trim() }
+                val sysCap = lines.getOrNull(0)?.toFloatOrNull()
+                val sysAc = lines.getOrNull(1)?.toIntOrNull()
+                fun field(n: String) = out.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("$n:") }?.substringAfter(':')?.trim()
+                val l = sysCap ?: field("level")?.toFloatOrNull()
+                val ac = if (sysAc != null) sysAc == 1 else (field("AC powered") == "true" || field("USB powered") == "true")
+                runOnUiThread {
+                    if (l != null) level = l.coerceIn(0f, 100f)
+                    charging = ac
+                }
+            }
+        }
         AlertDialog(onDismissRequest = onDone,
             title = { Text(stringResource(R.string.m_battery)) },
             text = {
@@ -436,10 +631,20 @@ class VmActivity : ComponentActivity() {
                 }
             },
             confirmButton = { Button(onClick = {
-                guestAsync("dumpsys battery set level ${level.toInt()}; dumpsys battery set ac ${if (charging) 1 else 0}; dumpsys battery set usb 0")
+                val lvl = level.toInt()
+                val ac = if (charging) 1 else 0
+                val cmd = "echo $lvl > /sys/class/power_supply/battery/capacity 2>/dev/null; " +
+                    "echo $ac > /sys/class/power_supply/ac/online 2>/dev/null; " +
+                    "dumpsys battery set level $lvl 2>/dev/null; " +
+                    "dumpsys battery set ac $ac 2>/dev/null; " +
+                    "dumpsys battery set usb 0 2>/dev/null"
+                guestAsync(cmd)
                 onDone()
             }) { Text(stringResource(R.string.m_apply)) } },
-            dismissButton = { OutlinedButton(onClick = { guestAsync("dumpsys battery reset"); onDone() }) { Text(stringResource(R.string.m_reset)) } })
+            dismissButton = { OutlinedButton(onClick = {
+                guestAsync("dumpsys battery reset 2>/dev/null")
+                onDone()
+            }) { Text(stringResource(R.string.m_reset)) } })
     }
 
     private fun rebootVm(recovery: Boolean = false) {
@@ -466,15 +671,25 @@ class VmActivity : ComponentActivity() {
     @Composable
     private fun Overlay() {
         var showLog by remember { mutableStateOf(false) }
+        var showTerm by remember { mutableStateOf(false) }
         var menu by remember { mutableStateOf(false) }
         var dialog by remember { mutableStateOf(Dlg.NONE) }
-        val running = state == GuestVm.State.RUNNING
+        // recovery is "running" too, but has no Android behind am/pm/settings
+        val running = state == GuestVm.State.RUNNING && !vm.recoveryMode
         var seconds by remember { mutableStateOf(0L) }
         var frames by remember { mutableStateOf(0L) }
-        LaunchedEffect(Unit) { while (true) { if (vm.recoveryMode) guest.format = vm.recoveryFormat; seconds = vm.bootSeconds(); frames = if (vm.glInApp) dev.lk.m7sense.GlBridge.frames() else guest.rings; delay(500) } }
+        LaunchedEffect(Unit) { while (true) { if (vm.recoveryMode) guest.format = vm.recoveryFormat else if (vm.engine == app.aemu.core.Engine.N64) guest.format = 1; seconds = vm.bootSeconds(); frames = if (vm.glInApp) dev.lk.m7sense.GlBridge.frames() else guest.rings; delay(500) } }
         // как только гость начал рисовать — карточку убираем, остаётся маленький индикатор
         val drawing = frames > 30
-        Box(Modifier.fillMaxSize()) {
+        androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+            // the menu button stays on screen: 40 dp button + 8 dp padding, anchored at the top end
+            val keep = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
+            val maxX = (constraints.maxWidth - keep).coerceAtLeast(0f)
+            val maxY = (constraints.maxHeight - keep * 2).coerceAtLeast(0f)
+            val rtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
+            fun clamp(o: Offset) = Offset(if (rtl) o.x.coerceIn(0f, maxX) else o.x.coerceIn(-maxX, 0f), o.y.coerceIn(0f, maxY))
+            LaunchedEffect(maxX, maxY) { menuOffset = clamp(menuOffset) }
+            led?.takeIf { it.lit && showLed }?.let { LedIndicator(it, Modifier.align(Alignment.TopCenter)) }
             // карточка загрузки
             AnimatedVisibility(
                 visible = state != GuestVm.State.RUNNING && !showLog && !(drawing && state == GuestVm.State.BOOTING),
@@ -482,9 +697,9 @@ class VmActivity : ComponentActivity() {
                 modifier = Modifier.align(Alignment.Center),
             ) { BootCard(seconds) }
 
-            if (drawing && state == GuestVm.State.BOOTING && !showLog) {
+            if (drawing && state == GuestVm.State.BOOTING && !showLog && vm.screenUpAt == 0L) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
-                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp)) {
+                    modifier = Modifier.align(Alignment.TopStart).displayCutoutPadding().statusBarsPadding().padding(8.dp)) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         LoadingIndicator(Modifier.size(24.dp))
                         Spacer(Modifier.width(6.dp))
@@ -497,12 +712,15 @@ class VmActivity : ComponentActivity() {
             AnimatedVisibility(visible = showLog, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
                 LogPanel(onClose = { showLog = false })
             }
+            AnimatedVisibility(visible = showTerm, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+                TerminalPanel(onClose = { showTerm = false })
+            }
 
             // top menu button (hidden while the log is open so it does not cover the log toolbar); drag to move it
-            if (!showLog) Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)
+            if (!showLog && !showTerm) Box(Modifier.align(Alignment.TopEnd).displayCutoutPadding().statusBarsPadding().padding(8.dp)
                 .offset { IntOffset(menuOffset.x.roundToInt(), menuOffset.y.roundToInt()) }
                 .pointerInput(Unit) {
-                    detectDragGestures(onDragEnd = { saveMenuOffset() }) { ch, d -> ch.consume(); menuOffset += d }
+                    detectDragGestures(onDragEnd = { saveMenuOffset() }) { ch, d -> ch.consume(); menuOffset = clamp(menuOffset + d) }
                 }) {
                 FilledTonalIconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.menu))
@@ -510,6 +728,11 @@ class VmActivity : ComponentActivity() {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.log)) }, leadingIcon = { Icon(Icons.Rounded.Terminal, null) },
                         onClick = { menu = false; showLog = true })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_terminal)) }, leadingIcon = { Icon(Icons.Rounded.Code, null) },
+                        enabled = running, onClick = { menu = false; showTerm = true })
+                    // the machine keeps running behind its notification
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_minimize)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
+                        onClick = { menu = false; moveTaskToBack(true) })
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text(stringResource(R.string.vol_up)) }, leadingIcon = { Icon(Icons.Rounded.VolumeUp, null) },
                         onClick = { vm.input.press(InputService.KEY_VOLUMEUP) })
@@ -520,27 +743,42 @@ class VmActivity : ComponentActivity() {
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_power_menu)) }, leadingIcon = { Icon(Icons.Rounded.PowerSettingsNew, null) },
                         onClick = { menu = false; vm.input.press(InputService.KEY_POWER, 1500) })
                     // long-press Menu makes 2.x–4.x call InputMethodManager.toggleSoftInput: the firmware's own keyboard
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_keyboard)) }, leadingIcon = { Icon(Icons.Rounded.Keyboard, null) },
-                        enabled = running, onClick = { menu = false; vm.input.press(InputService.KEY_MENU, 1000) })
-                    HorizontalDivider()
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_paste)) }, leadingIcon = { Icon(Icons.Rounded.ContentPaste, null) },
-                        enabled = running, onClick = { menu = false; pasteToGuest() })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_sms)) }, leadingIcon = { Icon(Icons.Rounded.Sms, null) },
-                        enabled = running, onClick = { menu = false; dialog = Dlg.SMS })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_call)) }, leadingIcon = { Icon(Icons.Rounded.Call, null) },
-                        enabled = running, onClick = { menu = false; dialog = Dlg.CALL })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_battery)) }, leadingIcon = { Icon(Icons.Rounded.BatteryStd, null) },
-                        enabled = running && vm.img.api >= 19, onClick = { menu = false; dialog = Dlg.BATTERY })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_install_apk)) }, leadingIcon = { Icon(Icons.Rounded.InstallMobile, null) },
-                        enabled = running, onClick = { menu = false; pickApk.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*")) })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_device)) }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
-                        enabled = running && vm.img.api >= 17, onClick = { menu = false; dialog = Dlg.DEVICE })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_adb)) }, leadingIcon = { Icon(Icons.Rounded.Lan, null) },
-                        enabled = running, onClick = { menu = false; dialog = Dlg.ADB })
+                    if (!vm.recoveryMode) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_keyboard)) }, leadingIcon = { Icon(Icons.Rounded.Keyboard, null) },
+                            enabled = running, onClick = {
+                                menu = false
+                                // 5.0+ hides the soft keyboard while it sees hardware keys and has no long-Menu toggle
+                                if (vm.img.api >= 21) guestAsync("settings put secure show_ime_with_hard_keyboard 1")
+                                else vm.input.press(InputService.KEY_MENU, 1000)
+                            })
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_paste)) }, leadingIcon = { Icon(Icons.Rounded.ContentPaste, null) },
+                            enabled = running, onClick = { menu = false; pasteToGuest() })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_sms)) }, leadingIcon = { Icon(Icons.Rounded.Sms, null) },
+                            enabled = running, onClick = { menu = false; dialog = Dlg.SMS })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_call)) }, leadingIcon = { Icon(Icons.Rounded.Call, null) },
+                            enabled = running, onClick = { menu = false; dialog = Dlg.CALL })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_battery)) }, leadingIcon = { Icon(Icons.Rounded.BatteryStd, null) },
+                            enabled = running, onClick = { menu = false; dialog = Dlg.BATTERY })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_install_apk)) }, leadingIcon = { Icon(Icons.Rounded.InstallMobile, null) },
+                            enabled = running, onClick = { menu = false; pickApk.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*")) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_device)) }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                            enabled = running, onClick = { menu = false; dialog = Dlg.DEVICE })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_adb)) }, leadingIcon = { Icon(Icons.Rounded.Lan, null) },
+                            enabled = running, onClick = { menu = false; dialog = Dlg.ADB })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.m_settings)) }, leadingIcon = { Icon(Icons.Rounded.Settings, null) },
+                            enabled = running, onClick = { menu = false; guestAsync("am start -a android.settings.SETTINGS") })
+                    }
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_screenshot)) }, leadingIcon = { Icon(Icons.Rounded.Screenshot, null) },
-                        enabled = running, onClick = { menu = false; screenshot() })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.m_settings)) }, leadingIcon = { Icon(Icons.Rounded.Settings, null) },
-                        enabled = running, onClick = { menu = false; guestAsync("am start -a android.settings.SETTINGS") })
+                        enabled = state == GuestVm.State.RUNNING, onClick = { menu = false; screenshot() })
+                    DropdownMenuItem(text = { Text(stringResource(if (recOn.value) R.string.m_record_stop else R.string.m_record)) },
+                        leadingIcon = { Icon(Icons.Rounded.Videocam, null) },
+                        enabled = state == GuestVm.State.RUNNING || recOn.value, onClick = { menu = false; toggleRecording() })
+                    DropdownMenuItem(text = { Text(stringResource(if (vncOn.value) R.string.m_vnc_stop else R.string.m_vnc)) },
+                        leadingIcon = { Icon(Icons.Rounded.Cast, null) },
+                        onClick = { menu = false; toggleVnc() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_reset_menu_pos)) }, leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
+                        onClick = { menu = false; menuOffset = Offset.Zero; saveMenuOffset() })
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_reboot)) }, leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         onClick = { menu = false; rebootVm() })
@@ -563,17 +801,130 @@ class VmActivity : ComponentActivity() {
             }
 
             // панель кнопок Android
-            if (vm.settings.showNavBar && !showLog) {
-                HorizontalFloatingToolbar(
-                    expanded = true,
-                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 6.dp),
-                ) {
-                    IconButton(onClick = { vm.input.press(InputService.KEY_BACK) }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back)) }
-                    IconButton(onClick = { vm.input.press(vm.input.homeCode) }) { Icon(Icons.Rounded.Circle, stringResource(R.string.home)) }
-                    if (vm.img.api >= 11) IconButton(onClick = { vm.input.press(InputService.KEY_APPSELECT) }) { Icon(Icons.Rounded.CropSquare, stringResource(R.string.recents)) }
-                    IconButton(onClick = { vm.input.press(InputService.KEY_MENU) }) { Icon(Icons.Rounded.Menu, stringResource(R.string.menu)) }
-                }
+            if (vm.settings.showNavBar && !showLog && !showTerm) {
+                NavBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (vm.settings.navSize == 0) 3.dp else 6.dp))
             }
+        }
+    }
+
+    /** The bar of guest buttons: the user's own set, each held down in the guest for as long as it is held here. */
+    @Composable
+    private fun NavBar(modifier: Modifier) {
+        val compact = vm.settings.navSize == 0
+        val keys = remember { vm.settings.navKeys.split(',').filter { it in app.aemu.core.VmSettings.NAV_ALL } }
+        if (keys.isEmpty()) return
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f), modifier = modifier) {
+            Row(Modifier.padding(horizontal = if (compact) 6.dp else 10.dp, vertical = if (compact) 2.dp else 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 4.dp)) {
+                for (k in keys) NavKey(k, if (compact) 36.dp else 48.dp)
+            }
+        }
+    }
+
+    @Composable
+    private fun NavKey(k: String, size: androidx.compose.ui.unit.Dp) {
+        var pressed by remember { mutableStateOf(false) }
+        val bg by androidx.compose.animation.animateColorAsState(
+            if (pressed) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else Color.Transparent, label = "key")
+        val code = when (k) {
+            "back" -> InputService.KEY_BACK; "home" -> InputService.KEY_HOME; "menu" -> InputService.KEY_MENU
+            "search" -> InputService.KEY_SEARCH; "volup" -> InputService.KEY_VOLUMEUP; "voldown" -> InputService.KEY_VOLUMEDOWN
+            "power" -> InputService.KEY_POWER; else -> 0
+        }
+        val step = with(androidx.compose.ui.platform.LocalDensity.current) { 18.dp.toPx() }
+        Box(Modifier.size(size).background(bg, CircleShape).pointerInput(k) {
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                pressed = true
+                val t0 = android.os.SystemClock.uptimeMillis()
+                if (k == "home") vm.input.home(true)
+                else if (code != 0) vm.input.key(code, true)
+                // the D-pad button is a little trackball: sliding the finger sends arrows, a tap selects
+                var acc = Offset.Zero
+                var moved = false
+                while (true) {
+                    val e = awaitPointerEvent()
+                    val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                    if (k == "dpad") {
+                        acc += c.position - c.previousPosition
+                        while (kotlin.math.abs(acc.x) >= step || kotlin.math.abs(acc.y) >= step) {
+                            moved = true
+                            if (kotlin.math.abs(acc.x) >= kotlin.math.abs(acc.y)) {
+                                vm.input.press(if (acc.x > 0) InputService.KEY_RIGHT else InputService.KEY_LEFT, 30)
+                                acc = Offset(acc.x - step * kotlin.math.sign(acc.x), acc.y)
+                            } else {
+                                vm.input.press(if (acc.y > 0) InputService.KEY_DOWN else InputService.KEY_UP, 30)
+                                acc = Offset(acc.x, acc.y - step * kotlin.math.sign(acc.y))
+                            }
+                        }
+                    }
+                    c.consume()
+                    if (!c.pressed) break
+                }
+                pressed = false
+                if (k == "home") vm.input.home(false)
+                else if (code != 0) vm.input.key(code, false)
+                else if (k == "recents") vm.input.recents(vm.img.api, vm.img.skin)
+                else if (k == "dpad" && !moved) vm.input.press(InputService.KEY_CENTER, if (android.os.SystemClock.uptimeMillis() - t0 > 500) 700 else 80)
+            }
+        }, contentAlignment = Alignment.Center) {
+            val d = navKeyLabel(k)
+            val m = Modifier.size(if (size < 40.dp) 20.dp else 24.dp)
+            when (k) {
+                "back" -> Icon(Icons.AutoMirrored.Rounded.ArrowBack, d, m)
+                "home" -> Icon(Icons.Rounded.Circle, d, m)
+                "recents" -> Icon(Icons.Rounded.CropSquare, d, m)
+                "menu" -> Icon(Icons.Rounded.Menu, d, m)
+                "search" -> Icon(Icons.Rounded.Search, d, m)
+                "volup" -> Icon(Icons.Rounded.VolumeUp, d, m)
+                "voldown" -> Icon(Icons.Rounded.VolumeDown, d, m)
+                "power" -> Icon(Icons.Rounded.PowerSettingsNew, d, m)
+                else -> Icon(Icons.Rounded.Gamepad, d, m)
+            }
+        }
+    }
+
+    /**
+     * The guest's LED above its screen: Sony's illumination bar as a glowing strip, other phones' notification LED as
+     * a dot. Blinks with the guest's on/off times.
+     */
+    @Composable
+    private fun LedIndicator(l: app.aemu.core.Lights.Led, modifier: Modifier) {
+        var on by remember(l) { mutableStateOf(true) }
+        LaunchedEffect(l) {
+            if (l.onMs > 0 && l.offMs > 0) while (true) { on = true; delay(l.onMs.toLong()); on = false; delay(l.offMs.toLong()) }
+        }
+        val alpha by androidx.compose.animation.core.animateFloatAsState(if (on) 1f else 0.08f,
+            androidx.compose.animation.core.tween(if (on) 120 else 260), label = "led")
+        val c = Color(0xff000000.toInt() or (l.color and 0xffffff))
+        val sony = vm.img.skin.contains("Xperia", true) || vm.img.brand.contains("Sony", true)
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val y = with(density) { (guestTopPx.toDp() - 10.dp).coerceAtLeast(4.dp) }
+        if (sony) {
+            Box(
+                modifier.offset(y = y)
+                    .width(160.dp)
+                    .height(6.dp)
+                    .alpha(alpha)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(
+                        androidx.compose.ui.graphics.Brush.horizontalGradient(
+                            listOf(
+                                Color.Transparent,
+                                c.copy(alpha = 0.4f),
+                                c,
+                                c.copy(alpha = 0.4f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
+        } else {
+            Box(
+                modifier.offset(y = y).size(14.dp)
+                    .alpha(alpha)
+                    .background(androidx.compose.ui.graphics.Brush.radialGradient(listOf(c, c.copy(alpha = 0.55f), Color.Transparent)), CircleShape)
+            )
         }
     }
 
@@ -634,7 +985,7 @@ class VmActivity : ComponentActivity() {
         }
         val list = if (guestTab) guestLines else logLines
         Surface(Modifier.fillMaxSize(), color = Color(0xF0101410), contentColor = Color(0xFFE2E3DD)) {
-            Column(Modifier.statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
+            Column(Modifier.statusBarsPadding().navigationBarsPadding().imePadding().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.log), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f),
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -659,6 +1010,71 @@ class VmActivity : ComponentActivity() {
                 SelectionContainer {
                     LazyColumn(state = st, modifier = Modifier.fillMaxSize()) {
                         items(list) { Text(it, style = Mono, color = Color(0xFFCFE8CF)) }
+                    }
+                }
+            }
+        }
+    }
+
+    // shell terminal into the guest: its lines survive closing and reopening the panel
+    private val termLines = mutableStateListOf<String>()
+    private val termHistory = ArrayList<String>()
+
+    @Composable
+    private fun TerminalPanel(onClose: () -> Unit) {
+        var cmd by remember { mutableStateOf("") }
+        var busy by remember { mutableStateOf(false) }
+        var histPos by remember { mutableStateOf(-1) }
+        fun run() {
+            val c = cmd.trim()
+            if (c.isEmpty() || busy) return
+            cmd = ""; histPos = -1
+            termHistory.remove(c); termHistory.add(c)
+            if (c == "clear") { termLines.clear(); return }
+            termLines.add("$ $c")
+            busy = true
+            thread {
+                val out = runCatching { vm.guestShell(c, 180_000) }.getOrElse { it.toString() }
+                runOnUiThread {
+                    termLines.addAll(out.trimEnd('\n').lines())
+                    while (termLines.size > 3000) termLines.removeAt(0)
+                    busy = false
+                }
+            }
+        }
+        Surface(Modifier.fillMaxSize(), color = Color(0xF0101410), contentColor = Color(0xFFE2E3DD)) {
+            Column(Modifier.statusBarsPadding().navigationBarsPadding().imePadding().padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.m_terminal), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (busy) LoadingIndicator(Modifier.size(32.dp))
+                    IconButton(onClick = { copyLog(termLines.toList()) }) { Icon(Icons.Rounded.ContentCopy, stringResource(R.string.log_copy)) }
+                    FilledTonalIconButton(onClick = onClose) { Icon(Icons.Rounded.Close, stringResource(R.string.close)) }
+                }
+                Spacer(Modifier.height(8.dp))
+                val st = rememberLazyListState()
+                LaunchedEffect(termLines.size) { if (termLines.isNotEmpty()) st.scrollToItem(termLines.size - 1) }
+                SelectionContainer(Modifier.weight(1f)) {
+                    LazyColumn(state = st, modifier = Modifier.fillMaxSize()) {
+                        items(termLines) { Text(it, style = Mono, color = if (it.startsWith("$ ")) Color(0xFF9AD0FF) else Color(0xFFCFE8CF)) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        if (termHistory.isNotEmpty()) {
+                            histPos = if (histPos <= 0) termHistory.size - 1 else histPos - 1
+                            cmd = termHistory[histPos]
+                        }
+                    }) { Icon(Icons.Rounded.History, null) }
+                    OutlinedTextField(cmd, { cmd = it }, modifier = Modifier.weight(1f), singleLine = true,
+                        textStyle = Mono, placeholder = { Text("getprop ro.build.version.release", style = Mono) },
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send,
+                            autoCorrectEnabled = false, capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { run() }))
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalIconButton(onClick = { run() }, enabled = !busy && cmd.isNotBlank()) {
+                        Icon(Icons.AutoMirrored.Rounded.Send, stringResource(R.string.m_send))
                     }
                 }
             }

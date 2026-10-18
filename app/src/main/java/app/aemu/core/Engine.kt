@@ -35,6 +35,16 @@ enum class Engine(
         glserverd = "libglserverd_kk.so",
         runner = "libdhdrun_kk.so",
         guestGles = "libGLES.so",
+    ),
+    /** arm64 firmware on an arm64 phone: the guest's own code runs natively (native/guest64), no translator. */
+    N64(
+        id = "n64",
+        title = "Native arm64",
+        qemu = "",      // per Android generation: see Kernel64
+        binderd = "",
+        glserverd = "",
+        runner = "",
+        guestGles = "",
     );
 
     companion object {

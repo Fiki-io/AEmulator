@@ -84,8 +84,11 @@ static u32 hexnum(const char **pp) {
     *pp = p; return v;
 }
 
+/* the map line holding sp, or the nearest lines around it (a stack that is gone, or a guard page) */
+static const char *g_sp_map, *g_below, *g_above;
+static u32 g_below_e, g_above_s;
 static void load_maps(void) {
-    g_nmaps = 0;
+    g_nmaps = 0; g_sp_map = g_below = g_above = 0; g_below_e = 0; g_above_s = 0;
     long fd = cr_sys3(SYS_open, (long)"/proc/self/maps", 0, 0);
     if (fd < 0) return;
     long total = 0;
@@ -106,7 +109,9 @@ static void load_maps(void) {
         u32 s = hexnum(&q); if (*q != '-') continue; q++;
         u32 e = hexnum(&q); if (*q != ' ') continue; q++;
         int exec = q[2] == 'x';
-        if (g_sp >= s && g_sp < e) g_stack_end = e;
+        if (g_sp >= s && g_sp < e) { g_stack_end = e; g_sp_map = line; }
+        if (e <= g_sp && e > g_below_e) { g_below_e = e; g_below = line; }
+        if (s > g_sp && (!g_above || s < g_above_s)) { g_above_s = s; g_above = line; }
         q += 5;
         u32 off = hexnum(&q);
         /* путь — после пятого поля */
@@ -162,9 +167,24 @@ static void dump_current(const char *title, u32 addr, u32 *regs) {
         flush_line();
     }
     put("sp "); puthex(regs[13]); flush_line();
+    if (g_sp_map) {
+        put("sp in "); put(g_sp_map); flush_line();
+        put("next above "); put(g_above ? g_above : "-"); flush_line();
+    }
+    else {
+        put("sp unmapped; below "); put(g_below ? g_below : "-"); flush_line();
+        put("sp unmapped; above "); put(g_above ? g_above : "-"); flush_line();
+    }
     /* стек: всё, что похоже на адрес возврата в исполняемый код */
     u32 *sp = (u32 *)regs[13];
     u32 words = g_stack_end > regs[13] ? (g_stack_end - regs[13]) / 4 : 0;
+    /* sp on a guard page (the stack ran out): walk the stack itself, from its lowest address */
+    if (g_sp_map && g_above && g_stack_end == g_above_s) {
+        const char *q = g_above;
+        hexnum(&q); q++;
+        u32 e = hexnum(&q);
+        sp = (u32 *)g_above_s; words = (e - g_above_s) / 4;
+    }
     if (words > 4096) words = 4096;
     int shown = 0;
     for (u32 i = 0; i < words && shown < 48; i++) {

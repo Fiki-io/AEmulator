@@ -36,9 +36,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import app.aemu.core.CpuInfo
 import app.aemu.core.Engine
 import app.aemu.core.GuestImage
 import app.aemu.core.VmSettings
@@ -99,6 +101,12 @@ fun SettingsSheet(img: GuestImage, onDismiss: () -> Unit, onSave: (VmSettings) -
             Toggle(stringResource(R.string.vs_jit), stringResource(R.string.vs_jit_sub), s.jit) { s = s.copy(jit = it) }
             if (img.api >= 21) Toggle(stringResource(R.string.vs_fulldex), stringResource(R.string.vs_fulldex_sub), s.fullDexopt) { s = s.copy(fullDexopt = it) }
             if (img.api < 14) Toggle(stringResource(R.string.vs_legacy), stringResource(R.string.vs_legacy_sub), s.legacyEngine) { s = s.copy(legacyEngine = it) }
+            val has32 = CpuInfo.hasAArch32
+            Toggle(
+                stringResource(R.string.vs_native32),
+                if (has32) stringResource(R.string.vs_native32_sub) else stringResource(R.string.vs_native32_unsupported),
+                s.native32 && has32
+            ) { if (has32) s = s.copy(native32 = it) }
             val ramIdx = RAM_STEPS.indexOf(s.ramMb).coerceAtLeast(0)
             ListItem(
                 headlineContent = { Text(stringResource(R.string.vs_ram)) },
@@ -136,7 +144,9 @@ fun SettingsSheet(img: GuestImage, onDismiss: () -> Unit, onSave: (VmSettings) -
             Spacer(Modifier.height(8.dp))
             Text(stringResource(R.string.vs_controls), style = MaterialTheme.typography.titleMedium)
             Toggle(stringResource(R.string.vs_nav), stringResource(R.string.vs_nav_sub), s.showNavBar) { s = s.copy(showNavBar = it) }
+            if (s.showNavBar) NavBarSetup(s) { s = it }
             Toggle(stringResource(R.string.vs_awake), stringResource(R.string.vs_awake_sub), s.keepScreenOn) { s = s.copy(keepScreenOn = it) }
+            Toggle(stringResource(R.string.as_led), stringResource(R.string.as_led_sub), s.showLed) { s = s.copy(showLed = it) }
             Toggle(stringResource(R.string.vs_single), stringResource(R.string.vs_single_sub), s.mtMode == 4) { s = s.copy(mtMode = if (it) 4 else 0) }
 
             Spacer(Modifier.height(16.dp))
@@ -145,6 +155,29 @@ fun SettingsSheet(img: GuestImage, onDismiss: () -> Unit, onSave: (VmSettings) -
         }
     }
 }
+
+/** Which buttons the bar has (tap to add or remove; added ones go to the end) and how big it is. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+internal fun NavBarSetup(s: VmSettings, set: (VmSettings) -> Unit) {
+    val keys = s.navKeys.split(',').filter { it in VmSettings.NAV_ALL }
+    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (k in keys + VmSettings.NAV_ALL.filter { it !in keys }) {
+            val on = k in keys
+            androidx.compose.material3.FilterChip(selected = on, label = { Text(navKeyLabel(k)) },
+                onClick = { set(s.copy(navKeys = (if (on) keys - k else keys + k).joinToString(","))) })
+        }
+    }
+    Toggle(stringResource(R.string.vs_nav_compact), stringResource(R.string.vs_nav_compact_sub), s.navSize == 0) { set(s.copy(navSize = if (it) 0 else 1)) }
+}
+
+@Composable
+internal fun navKeyLabel(k: String) = stringResource(when (k) {
+    "back" -> R.string.back; "home" -> R.string.home; "recents" -> R.string.recents; "menu" -> R.string.menu
+    "search" -> R.string.nav_search; "volup" -> R.string.vol_up; "voldown" -> R.string.vol_down
+    "power" -> R.string.power; else -> R.string.nav_dpad
+})
 
 @Composable
 internal fun Toggle(title: String, sub: String, on: Boolean, set: (Boolean) -> Unit) {

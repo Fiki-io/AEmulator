@@ -28,7 +28,7 @@ S = {
     "start": "Chạy",
     "rename": "Đổi tên",
     "help_title": "Firmware được hỗ trợ",
-    "help_text": "• Android 2.3 và 4.0–4.4: hỗ trợ chính; 5.x–6.x: thử nghiệm.\n• Chỉ firmware ARM 32-bit (armeabi / armeabi-v7a).\n\nĐịnh dạng:\n• ZIP recovery CWM/TWRP (MIUI, CyanogenMod, bản port, đa số ROM tùy biến);\n• Samsung: Odin .tar / .tar.md5 hoặc ZIP chứa AP_*.tar.md5;\n• factory image của Google (.tgz / .zip);\n• system.img (ext4, sparse), bản sao lưu TWRP system.ext4.win;\n• OTA với system.new.dat(.br) + system.transfer.list.\n\nTốt nhất gói có boot.img: thứ tự khởi động dịch vụ được lấy từ đó.",
+    "help_text": "• Android 2.3–4.4: firmware ARM 32-bit, chạy qua QEMU.\n• Android 5.0–17: firmware arm64 và GSI, chạy trực tiếp trên điện thoại.\n\nĐịnh dạng:\n• ZIP recovery CWM/TWRP (MIUI, CyanogenMod, bản port, đa số ROM tùy biến);\n• Samsung: Odin .tar / .tar.md5 hoặc ZIP chứa AP_*.tar.md5;\n• factory image của Google (.tgz / .zip);\n• system.img (ext4, sparse), bản sao lưu TWRP system.ext4.win;\n• OTA với system.new.dat(.br) + system.transfer.list.\n\nTốt nhất gói có boot.img: thứ tự khởi động dịch vụ được lấy từ đó.",
     "vs_screen": "Màn hình khách",
     "vs_fixed_2x": "Android 2.x dùng màn hình cố định 480×800, 240 dpi.",
     "vs_screen_hint": "Màn hình càng nhỏ hệ thống càng nhanh.",

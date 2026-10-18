@@ -147,7 +147,11 @@ class GuestLmk(private val root: File, private val lowRam: Boolean, private val 
             val avail = memAvailableMb()
             // RSS overcounts shared zygote pages, so the budget check is approximate (upper bound)
             val overBudget = ramMb > 0 && adj.keys.sumOf { rssMb(it).coerceAtLeast(0) } > ramMb * 2
-            if (avail >= minHost && cached.size <= maxCached && !overBudget) continue
+            // The count and the budget only matter when the phone runs short: with plenty free, killing a cached
+            // service just makes the activity manager start it again (MIUI keeps 11-14 of them: a kill every 5 s,
+            // providers gone under their clients, the CPU busy with restarts)
+            val tight = avail < minHost * 2
+            if (avail >= minHost && !(tight && (cached.size > maxCached || overBudget))) continue
             val sizes = cached.associateWith { rssMb(it) }
             // сначала самый неважный, среди равных — самый большой
             val victim = cached.maxWithOrNull(compareBy<Int> { adj[it] ?: 0 }.thenBy { sizes[it] ?: 0 }) ?: continue

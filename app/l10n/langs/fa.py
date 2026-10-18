@@ -28,7 +28,7 @@ S = {
     "start": "اجرا",
     "rename": "تغییر نام",
     "help_title": "فرم‌ویرهای پشتیبانی‌شده",
-    "help_text": "• اندروید 2.3 و 4.0 تا 4.4: پشتیبانی اصلی؛ 5.x تا 6.x: آزمایشی.\n• فقط فرم‌ویرهای ARM ‏32 بیتی (armeabi / armeabi-v7a).\n\nقالب‌ها:\n• ‏ZIP ریکاوری CWM/TWRP (MIUI، CyanogenMod، پورت‌ها، بیشتر رام‌های سفارشی)؛\n• سامسونگ: ‎.tar / .tar.md5 از Odin یا ZIP حاوی AP_*.tar.md5؛\n• ایمیج‌های کارخانهٔ گوگل (.tgz / .zip)؛\n• ‏system.img ‏(ext4، sparse)، پشتیبان TWRP ‏system.ext4.win؛\n• ‏OTA با system.new.dat(.br) و system.transfer.list.\n\nبهتر است آرشیو شامل boot.img باشد: ترتیب اجرای سرویس‌ها از آن خوانده می‌شود.",
+    "help_text": "• اندروید 2.3 تا 4.4: فرم‌ویرهای ARM ‏32 بیتی، از طریق QEMU.\n• اندروید 5.0 تا 17: فرم‌ویرهای arm64 و GSI، مستقیم روی گوشی.\n\nقالب‌ها:\n• ‏ZIP ریکاوری CWM/TWRP (MIUI، CyanogenMod، پورت‌ها، بیشتر رام‌های سفارشی)؛\n• سامسونگ: ‎.tar / .tar.md5 از Odin یا ZIP حاوی AP_*.tar.md5؛\n• ایمیج‌های کارخانهٔ گوگل (.tgz / .zip)؛\n• ‏system.img ‏(ext4، sparse)، پشتیبان TWRP ‏system.ext4.win؛\n• ‏OTA با system.new.dat(.br) و system.transfer.list.\n\nبهتر است آرشیو شامل boot.img باشد: ترتیب اجرای سرویس‌ها از آن خوانده می‌شود.",
     "vs_screen": "صفحهٔ مهمان",
     "vs_fixed_2x": "اندروید 2.x صفحهٔ ثابت 480×800 با 240 dpi دارد.",
     "vs_screen_hint": "هرچه صفحه کوچک‌تر، سیستم سریع‌تر.",

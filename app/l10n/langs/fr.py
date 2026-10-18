@@ -28,7 +28,7 @@ S = {
     "start": "Démarrer",
     "rename": "Renommer",
     "help_title": "ROM prises en charge",
-    "help_text": "• Android 2.3 et 4.0–4.4 : prise en charge principale ; 5.x–6.x : expérimental.\n• ROM ARM 32 bits uniquement (armeabi / armeabi-v7a).\n\nFormats :\n• ZIP recovery CWM/TWRP (MIUI, CyanogenMod, portages, la plupart des ROM custom) ;\n• Samsung : .tar / .tar.md5 d’Odin ou ZIP avec AP_*.tar.md5 ;\n• images d’usine Google (.tgz / .zip) ;\n• system.img (ext4, sparse), sauvegarde TWRP system.ext4.win ;\n• OTA avec system.new.dat(.br) + system.transfer.list.\n\nIdéalement l’archive contient boot.img : l’ordre de démarrage des services en est tiré.",
+    "help_text": "• Android 2.3–4.4 : ROM ARM 32 bits, via QEMU.\n• Android 5.0–17 : ROM arm64 et GSI, en natif sur le téléphone.\n\nFormats :\n• ZIP recovery CWM/TWRP (MIUI, CyanogenMod, portages, la plupart des ROM custom) ;\n• Samsung : .tar / .tar.md5 d’Odin ou ZIP avec AP_*.tar.md5 ;\n• images d’usine Google (.tgz / .zip) ;\n• system.img (ext4, sparse), sauvegarde TWRP system.ext4.win ;\n• OTA avec system.new.dat(.br) + system.transfer.list.\n\nIdéalement l’archive contient boot.img : l’ordre de démarrage des services en est tiré.",
     "vs_screen": "Écran invité",
     "vs_fixed_2x": "Android 2.x utilise un écran fixe 480×800 à 240 dpi.",
     "vs_screen_hint": "Plus l’écran est petit, plus le système est rapide.",

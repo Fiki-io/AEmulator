@@ -105,19 +105,82 @@ class Importer(
             h.size > 6 && h[0] == '7'.code.toByte() && h[1] == 'z'.code.toByte() && h[2] == 0xBC.toByte() && h[3] == 0xAF.toByte() -> {
                 if (ch != null) importSevenZ(ch, name, depth) else throw IOException("7z without random access")
             }
-            SparseSource.probe(src) -> importImage(SparseSource(listOf(src)), "system")
-            Ext4Reader.probe(src) -> importImage(src, "system")
-            isTar(h) || name.endsWith(".tar", true) || name.endsWith(".md5", true) || name.endsWith(".win", true) ->
-                importTarStream(streamOf(src), name, depth)
-            h[0] == 0x1f.toByte() && h[1] == 0x8b.toByte() -> importTarStream(GZIPInputStream(streamOf(src), 1 shl 16), name, depth)
-            h[0] == 0xfd.toByte() && h[1] == '7'.code.toByte() -> importTarStream(XZInputStream(streamOf(src)), name, depth)
-            h[0] == 'B'.code.toByte() && h[1] == 'Z'.code.toByte() && h[2] == 'h'.code.toByte() -> importTarStream(BZip2CompressorInputStream(streamOf(src)), name, depth)
+            h.size > 7 && String(h, 0, 6, Charsets.ISO_8859_1) == "Rar!\u001a\u0007" -> {
+                if (h[6].toInt() == 1) throw IOException("RAR5 archives are not supported yet: repack \"$name\" as ZIP or 7z")
+                importRar(src, name, depth)
+            }
+            PacFile.probe(h) -> if (ch != null) importPac(src, ch) else throw IOException("pac without random access")
+            PayloadReader.probe(h) -> importPayload(src)
+            SinImage.probe(h) || SinImage.probeOld(h) && name.endsWith(".sin", true) -> importSin(streamOf(src), name.substringAfterLast('/'))
+            SparseSource.probe(src) || Ext4Reader.probe(src) || SuperImage.probe(src) || ErofsReader.probe(src) -> importImage(src, "system")
+            // (the content first: forum rootfs ".tar" files are gzip-compressed)
+            isTar(h) || !isCompressed(h) && name.endsWith(".tar", true) || name.endsWith(".md5", true) || name.endsWith(".win", true) ->
+                importTarStream(streamOf(src), name, depth, src)
+            h[0] == 0x1f.toByte() && h[1] == 0x8b.toByte() -> importCompressed(GZIPInputStream(streamOf(src), 1 shl 16), name, depth)
+            h[0] == 0xfd.toByte() && h[1] == '7'.code.toByte() -> importCompressed(XZInputStream(streamOf(src)), name, depth)
+            h[0] == 'B'.code.toByte() && h[1] == 'Z'.code.toByte() && h[2] == 'h'.code.toByte() -> importCompressed(BZip2CompressorInputStream(streamOf(src)), name, depth)
+            h[0] == 0x04.toByte() && h[1] == 0x22.toByte() && h[2] == 0x4d.toByte() && h[3] == 0x18.toByte() ->
+                importCompressed(org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream(streamOf(src)), name, depth)
             String(h, 0, 8, Charsets.ISO_8859_1) == "ANDROID!" -> takeBoot(readAllFrom(src))
+            // raw images without a recognisable header at 0 (YAFFS2 dumps, Samsung RFS)
+            Yaffs2Image.probe(src) || FatImage.probe(src) -> importImage(src, "system")
             else -> throw IOException("unknown file format \"$name\"")
         }
     }
 
+    /**
+     * gzip/xz/bzip2/lz4 around something: a tar is unpacked as a stream; anything else (GSI system.img.xz, a zip,
+     * a sparse image) is written out and recognised again.
+     */
+    private fun importCompressed(s: InputStream, name: String, depth: Int) {
+        val b = java.io.BufferedInputStream(s, 1 shl 16)
+        b.mark(1024)
+        val head = ByteArray(512)
+        var n = 0
+        while (n < head.size) { val k = b.read(head, n, head.size - n); if (k < 0) break; n += k }
+        b.reset()
+        if (n >= 262 && isTar(head)) { importTarStream(b, name, depth); return }
+        val inner = name.replace(Regex("(?i)\\.(gz|tgz|xz|bz2|lz4)$"), "")
+        val t = spill(b, inner.substringAfterLast('/'))
+        try { FileChannel.open(t.toPath(), StandardOpenOption.READ).use { c -> handle(ChannelSource(c), c, inner, depth + 1) } }
+        finally { t.delete() }
+    }
+
+    /** RAR 4 (junrar): entries handled like those of a zip, via temporary files. */
+    private fun importRar(src: RandomSource, name: String, depth: Int) {
+        val whole = File(tmp, "${System.nanoTime()}-whole.rar")
+        streamOf(src).use { i -> whole.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+        try {
+            com.github.junrar.Archive(whole).use { a ->
+                val nested = ArrayList<Pair<File, String>>()
+                for (fh in a.fileHeaders) {
+                    if (cancelled) throw IOException("cancelled")
+                    if (fh.isDirectory) continue
+                    val n = fh.fileName.replace('\\', '/')
+                    val base = n.substringAfterLast('/')
+                    when {
+                        n.startsWith("system/") -> { a.getInputStream(fh).use { writeFile(n, it, null) }; gotSystem = true }
+                        base.equals("boot.img", true) -> a.getInputStream(fh).use { takeBoot(it.readBytes()) }
+                        base.equals("recovery.img", true) && fh.fullUnpackSize < 64_000_000 -> a.getInputStream(fh).use { recovery = it.readBytes() }
+                        base.matches(SYSTEM_IMAGE) || base.matches(Regex("(?i).*\\.(zip|7z|tar|md5|tgz|gz|xz|pac|ftf|sin)")) && fh.fullUnpackSize > 20_000_000 ->
+                            nested.add(a.getInputStream(fh).use { spill(it, base) } to base)
+                    }
+                    onProgress("Extracting: $base", -1f)
+                }
+                for ((f, base) in nested) {
+                    try { FileChannel.open(f.toPath(), StandardOpenOption.READ).use { c -> handle(ChannelSource(c), c, base, depth + 1) } }
+                    finally { f.delete() }
+                }
+            }
+        } finally { whole.delete() }
+        if (!gotSystem) log("no system found in archive $name")
+    }
+
     private fun isTar(h: ByteArray) = h.size > 262 && String(h, 257, 5, Charsets.ISO_8859_1) == "ustar"
+
+    /** gzip, xz, bzip2 */
+    private fun isCompressed(h: ByteArray) = h.size > 2 && (h[0] == 0x1f.toByte() && h[1] == 0x8b.toByte() ||
+        h[0] == 0xfd.toByte() && h[1] == '7'.code.toByte() || h[0] == 'B'.code.toByte() && h[1] == 'Z'.code.toByte() && h[2] == 'h'.code.toByte())
 
     private fun streamOf(src: RandomSource): InputStream = object : InputStream() {
         var pos = 0L
@@ -174,8 +237,12 @@ class Importer(
                 }
                 base.equals("boot.img", true) -> zip.getInputStream(e).use { takeBoot(it.readBytes()) }
                 base.equals("recovery.img", true) && e.size < 64_000_000 -> zip.getInputStream(e).use { recovery = it.readBytes() }
-                base.matches(Regex("(?i)system(\\.ext4)?\\.img(\\.ext4)?|system_image\\.img|system\\.raw\\.img|factoryfs\\.img")) ->
-                    withEntrySource(zip, e) { importImage(if (SparseSource.probe(it)) SparseSource(listOf(it)) else it, "system") }
+                base.matches(SYSTEM_IMAGE) ->
+                    withEntrySource(zip, e) { importImage(it, "system") }
+                base.equals("payload.bin", true) -> withEntrySource(zip, e) { importPayload(it) }
+                // Sony .ftf: system.sin is the system partition, kernel.sin the kernel with the ramdisk
+                base.matches(Regex("(?i)(system|kernel|boot)\\.sin")) && !(gotSystem && base.startsWith("system", true)) ->
+                    zip.getInputStream(e).use { importSin(it, base) }
                 base.matches(Regex("(?i)vendor(\\.ext4)?\\.img")) ->
                     withEntrySource(zip, e) { runCatching { importImage(if (SparseSource.probe(it)) SparseSource(listOf(it)) else it, "vendor") } }
                 base.lowercase().endsWith(".zip") && (base.startsWith("image-") || depth == 0 && e.size > 50_000_000) -> {
@@ -205,6 +272,23 @@ class Importer(
             }
             FileChannel.open(raw.toPath(), StandardOpenOption.READ).use { c -> importImage(ChannelSource(c), "system") }
             raw.delete()
+            // a Treble OTA (8.0+) carries the vendor partition the same way; the firmware's apps and overlays live there.
+            // With dynamic partitions (10+) product, system_ext and odm come as their own data files too.
+            for (p in listOf("vendor", "product", "system_ext", "odm")) {
+                val pDat = entries.firstOrNull { it.name == datBr.name.replace("system.new.dat", "$p.new.dat") } ?: continue
+                val pList = entries.firstOrNull { it.name == listName.replace("system.transfer.list", "$p.transfer.list") } ?: continue
+                runCatching {
+                    onProgress("Building $p.img from OTA", 0.8f)
+                    zip.getInputStream(pDat).use { s ->
+                        val data = if (pDat.name.endsWith(".br")) BrotliInputStream(BufferedInputStream(s, 1 shl 20)) else s
+                        TransferList.build(zip.getInputStream(pList).use { String(it.readBytes()) }, data, raw)
+                    }
+                    FileChannel.open(raw.toPath(), StandardOpenOption.READ).use { c ->
+                        importImage(ChannelSource(c), if (p == "vendor" || p == "odm") p else "system/$p")
+                    }
+                }.onFailure { log("$p partition: ${it.message}") }
+                raw.delete()
+            }
         }
         if (sparseChunks.isNotEmpty() && !gotSystem) {
             val parts = sparseChunks.map { spillEntry(zip, it) }
@@ -230,8 +314,8 @@ class Importer(
                     n.startsWith("system/") -> { writeFile(n, stream, null); gotSystem = true }
                     base.equals("boot.img", true) -> takeBoot(stream.readBytes())
                     base.equals("recovery.img", true) && e.size < 64_000_000 -> recovery = stream.readBytes()
-                    base.matches(Regex("(?i)system(\\.ext4)?\\.img(\\.ext4)?|system_image\\.img|system\\.raw\\.img|factoryfs\\.img")) ->
-                        nested.add(spill(stream, base) to "system")
+                    base.matches(SYSTEM_IMAGE) -> nested.add(spill(stream, base) to "system")
+                    base.matches(Regex("(?i)(system|kernel|boot)\\.sin")) -> importSin(stream, base)
                     base.matches(Regex("(?i).*\\.(zip|tar|tar\\.md5|md5|tgz|tar\\.gz)")) && e.size > 20_000_000 &&
                         !base.startsWith("MODEM") && !base.startsWith("CP_") && !base.contains("CSC") ->
                         nested.add(spill(stream, base) to "archive")
@@ -242,7 +326,7 @@ class Importer(
                 try {
                     FileChannel.open(f.toPath(), StandardOpenOption.READ).use { c ->
                         val src = ChannelSource(c)
-                        if (kind == "system") importImage(if (SparseSource.probe(src)) SparseSource(listOf(src)) else src, "system")
+                        if (kind == "system") importImage(src, "system")
                         else handle(src, c, f.name, depth + 1)
                     }
                 } finally { f.delete() }
@@ -293,7 +377,9 @@ class Importer(
         return t
     }
 
-    private fun importTarStream(s: InputStream, name: String, depth: Int) {
+    /** [under]: the tar itself as a random-access source, when [s] reads it from its first byte (a tar that is the
+     *  file being imported, not one inside a compressed stream or another archive) */
+    private fun importTarStream(s: InputStream, name: String, depth: Int, under: RandomSource? = null) {
         val tar = TarArchiveInputStream(s, "UTF-8")
         var fullRoot: Boolean? = null
         while (true) {
@@ -305,14 +391,26 @@ class Importer(
             // дерево rootfs целиком (system/, data/, dev/, …)
             if (fullRoot == null && (n == "system" || n.startsWith("system/") || n.startsWith("init.rc") || n.startsWith("default.prop"))) fullRoot = true
             when {
-                base.matches(Regex("(?i)system(\\.ext4)?\\.img(\\.ext4)?(\\.lz4)?|factoryfs\\.img|system\\.img\\.ext4")) && e.isFile -> {
-                    val t = spill(maybeLz4(tar, base), base)
-                    FileChannel.open(t.toPath(), StandardOpenOption.READ).use { c ->
-                        val src = ChannelSource(c)
-                        importImage(if (SparseSource.probe(src)) SparseSource(listOf(src)) else src, "system")
+                (base.matches(SYSTEM_IMAGE) || base.matches(Regex("(?i)(system\\.img(\\.ext4)?|factoryfs\\.(img|rfs)|super\\.img)\\.lz4"))) && e.isFile -> {
+                    if (under != null && !base.endsWith(".lz4", true)) {
+                        // an Odin tar holds the image as it is: read in place, the phone needs no second copy of it
+                        importImage(ExtentSource(under, listOf(tar.bytesRead to e.size)), "system")
+                    } else {
+                        val t = spill(maybeLz4(tar, base), base)
+                        FileChannel.open(t.toPath(), StandardOpenOption.READ).use { c -> importImage(ChannelSource(c), "system") }
+                        t.delete()
                     }
-                    t.delete()
                 }
+                // other partitions as separate images (Samsung CSC: prism, optics; pre-super AP: vendor, product, odm)
+                base.matches(PART_IMAGE) && e.isFile && e.size > 4096 -> {
+                    val p = base.lowercase().substringBefore('.')
+                    val mount = when (p) { "product", "system_ext" -> "system/$p"; else -> p }
+                    runCatching {
+                        val t = spill(maybeLz4(tar, base), base)
+                        try { FileChannel.open(t.toPath(), StandardOpenOption.READ).use { c -> importImage(ChannelSource(c), mount) } } finally { t.delete() }
+                    }.onFailure { log("$base skipped: ${it.message}") }
+                }
+                base.matches(Regex("(?i)(system|kernel|boot)\\.sin")) && e.isFile -> importSin(tar.nonClosing(), base)
                 base.matches(Regex("(?i)(boot\\.img|zImage|kernel)(\\.lz4)?")) && e.isFile -> takeBoot(maybeLz4(tar, base).readBytes())
                 base.matches(Regex("(?i)recovery\\.img(\\.lz4)?")) && e.isFile && e.size < 64_000_000 -> recovery = maybeLz4(tar, base).readBytes()
                 base.matches(Regex("(?i).*\\.(tar|tar\\.md5)")) && e.isFile && e.size > 20_000_000 -> importTarStream(tar.nonClosing(), base, depth + 1)
@@ -360,7 +458,119 @@ class Importer(
 
     // ------------------------------------------------------------------ образы ФС
 
-    private fun importImage(src: RandomSource, mount: String) {
+    /** A partition image of any supported file system: sparse → ext4, super.img (dynamic partitions), YAFFS2, FAT/RFS. */
+    private fun importImage(src0: RandomSource, mount: String) {
+        val src = if (SparseSource.probe(src0)) SparseSource(listOf(src0)) else src0
+        when {
+            Ext4Reader.probe(src) -> importExt4(src, mount)
+            SuperImage.probe(src) -> {
+                val parts = SuperImage.partitions(src)
+                log("super.img: ${parts.keys.joinToString()}")
+                fun pick(n: String) = parts[n]?.takeIf { it.isNotEmpty() } ?: parts["${n}_a"]?.takeIf { it.isNotEmpty() }
+                importImage(ExtentSource(src, pick("system") ?: throw IOException("super.img without a system partition")), "system")
+                for (p in listOf("vendor", "product", "system_ext", "odm")) pick(p)?.let { e ->
+                    runCatching { importImage(ExtentSource(src, e), if (p == "vendor" || p == "odm") p else "system/$p") }
+                        .onFailure { log("super.img: $p skipped: ${it.message}") }
+                }
+                for (p in parts.keys.map { it.removeSuffix("_a") }.filter { it.matches(SKIN_PARTITION) }.distinct()) pick(p)?.let { e ->
+                    runCatching { importImage(ExtentSource(src, e), p) }.onFailure { log("super.img: $p skipped: ${it.message}") }
+                }
+            }
+            Yaffs2Image.probe(src) -> importTree(Yaffs2Image(src), mount, "YAFFS2")
+            FatImage.probe(src) -> importTree(FatImage(src), mount, "FAT/RFS")
+            ErofsReader.probe(src) -> importTree(ErofsImage(src), mount, "EROFS")
+            else -> throw IOException("unknown file system in the $mount image")
+        }
+    }
+
+    private fun importTree(tree: TreeSource, mount: String, kind: String) {
+        onProgress("Reading image $mount ($kind)", -1f)
+        var n = 0
+        tree.walk { path, isDir, link, mode, size, data ->
+            if (cancelled) throw IOException("cancelled")
+            val rel = "$mount/$path"
+            val f = File(root, rel)
+            if (!f.canonicalPath.startsWith(root.canonicalPath)) return@walk
+            when {
+                isDir -> f.mkdirs()
+                link != null -> symlinks.add(link to "/$rel")
+                data != null -> {
+                    f.parentFile?.mkdirs()
+                    data().use { i -> f.outputStream().buffered(1 shl 20).use { o -> i.copyTo(o, 1 shl 16) } }
+                    applyMode(f, mode and 0xfff)
+                    files++; bytes += size
+                }
+            }
+            if (++n % 150 == 0) onProgress("$mount: ${path.substringAfterLast('/')}", -1f)
+        }
+        if (mount == "system") { gotSystem = true; hoistSystemAsRoot() }
+        log("image $mount ($kind): $n objects")
+    }
+
+    /** Sony SIN v3: unpacked into a sparse temporary image, then read like any partition image. */
+    private fun importSin(s: InputStream, base: String) {
+        val raw = File(tmp, "${System.nanoTime()}-$base.img")
+        try {
+            onProgress("Unpacking $base", -1f)
+            // the system partition is read out of the SIN itself (a copy of the SIN takes far less room than the
+            // unpacked partition); the layouts that cannot be read in place are unpacked as before
+            if (base.startsWith("system", true)) {
+                s.use { i -> raw.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+                if (cancelled) throw IOException("cancelled")
+                val inPlace = FileChannel.open(raw.toPath(), StandardOpenOption.READ).use { c ->
+                    SinImage.source(c)?.also { importImage(it, "system") } != null
+                }
+                if (inPlace) return
+                val sin = File(tmp, "${System.nanoTime()}-$base")
+                if (!raw.renameTo(sin)) throw IOException("cannot move $raw")
+                try { sin.inputStream().use { SinImage.unpack(it, raw) { if (cancelled) throw IOException("cancelled") } } } finally { sin.delete() }
+            } else
+            SinImage.unpack(s, raw) { if (cancelled) throw IOException("cancelled") }
+            if (base.startsWith("kernel", true) || base.startsWith("boot", true)) { takeBoot(raw.readBytes()); return }
+            if (base.startsWith("recovery", true) || base.startsWith("fotakernel", true)) return
+            FileChannel.open(raw.toPath(), StandardOpenOption.READ).use { c -> importImage(ChannelSource(c), base.substringBefore('.').lowercase()) }
+        } finally { raw.delete() }
+    }
+
+    /** Spreadtrum .pac: partition files are slices of the package; system, boot and recovery are taken from it. */
+    private fun importPac(src: RandomSource, ch: FileChannel) {
+        val list = PacFile.entries(src)
+        log("PAC: ${list.joinToString { "${it.id}=${it.name}" }}")
+        fun slice(e: PacFile.Entry) = ChannelSource(ch, e.offset, e.size)
+        fun isPart(e: PacFile.Entry, p: String) = e.id.equals(p, true) || e.name.substringBefore('.').equals(p, true)
+        list.firstOrNull { isPart(it, "boot") }?.let { e ->
+            val b = ByteBuffer.allocate(e.size.toInt()); slice(e).read(0, b); takeBoot(b.array())
+        }
+        list.firstOrNull { isPart(it, "recovery") }?.takeIf { it.size < 64_000_000 }?.let { e ->
+            val b = ByteBuffer.allocate(e.size.toInt()); slice(e).read(0, b); recovery = b.array()
+        }
+        val sys = list.firstOrNull { isPart(it, "system") } ?: list.firstOrNull { isPart(it, "super") }
+            ?: throw IOException("PAC without a system image")
+        importImage(slice(sys), "system")
+        list.firstOrNull { isPart(it, "vendor") }?.let { e -> runCatching { importImage(slice(e), "vendor") } }
+    }
+
+    /** A full A/B OTA: every partition with files of the firmware is taken out of payload.bin in turn and read. */
+    private fun importPayload(src: RandomSource) {
+        log("OTA payload.bin")
+        val extra = PayloadReader.partitionNames(src).map { it.removeSuffix("_a") }.filter { it.matches(SKIN_PARTITION) }.distinct()
+        for ((part, mount) in listOf("system" to "system", "vendor" to "vendor", "odm" to "odm",
+                "product" to "system/product", "system_ext" to "system/system_ext") + extra.map { it to it }) {
+            val img = File(tmp, "${System.nanoTime()}-$part.img")
+            try {
+                val ok = PayloadReader.extractPartition(src, part, img) { p -> onProgress("Extracting $part from payload.bin", p) }
+                if (!ok) { if (part == "system") throw IOException("payload.bin without a system partition"); continue }
+                FileChannel.open(img.toPath(), StandardOpenOption.READ).use { c ->
+                    if (part == "system") importImage(ChannelSource(c), mount)
+                    else runCatching { importImage(ChannelSource(c), mount) }.onFailure { log("payload.bin: $part skipped: ${it.message}") }
+                }
+            } finally {
+                img.delete()
+            }
+        }
+    }
+
+    private fun importExt4(src: RandomSource, mount: String) {
         val fs = Ext4Reader(src)
         onProgress("Reading image $mount (ext4, block ${fs.blockSize})", -1f)
         var n = 0
@@ -380,8 +590,33 @@ class Importer(
             }
             if (++n % 150 == 0) onProgress("$mount: ${path.substringAfterLast('/')}", -1f)
         }
-        if (mount == "system") gotSystem = true
+        if (mount == "system") { gotSystem = true; hoistSystemAsRoot() }
         log("image $mount: $n objects")
+    }
+
+    /**
+     * A "system-as-root" image (every A/B device, and all of them from Android 10) holds the whole root directory, with
+     * the system partition's files in its /system. It was read under <root>/system like a plain system image, so it is
+     * moved one level up: <root>/system/system becomes <root>/system, and the links it brought (/bin, /etc, /product,
+     * /system_ext, /init...) land in the root where they belong.
+     */
+    private fun hoistSystemAsRoot() {
+        val outer = File(root, "system")
+        val inner = File(outer, "system")
+        if (!File(inner, "framework").isDirectory && !File(inner, "build.prop").isFile) return
+        val aside = File(root, ".system-as-root")
+        if (!outer.renameTo(aside)) { log("system-as-root: cannot move the tree"); return }
+        aside.listFiles()?.forEach { f ->
+            val dst = File(root, f.name)
+            if (dst.exists() && dst.isDirectory && f.isDirectory) { f.listFiles()?.forEach { c -> c.renameTo(File(dst, c.name)) }; f.delete() }
+            else f.renameTo(dst)
+        }
+        aside.delete()
+        for (i in symlinks.indices) {
+            val (target, link) = symlinks[i]
+            if (link.startsWith("/system/")) symlinks[i] = target to link.removePrefix("/system")
+        }
+        log("system-as-root image: the tree is taken as the root directory")
     }
 
     private fun takeBoot(data: ByteArray) {
@@ -522,6 +757,15 @@ class Importer(
     }
 
     companion object {
+        /** partition images other than system inside a tar (taken after system, which SYSTEM_IMAGE catches first) */
+        private val PART_IMAGE = Regex("(?i)(vendor|product|odm|prism|optics)\\.img(\\.ext4)?(\\.lz4)?")
+        /** system partition images by name (ext4/sparse, Samsung RFS, YAFFS2 dumps, super.img of 10+, erofs, f2fs) */
+        private val SYSTEM_IMAGE = Regex("(?i)system(_[a-z0-9]+)?(\\.ext4|\\.erofs|\\.f2fs)?\\.img(\\.ext4)?|" +
+            "system_image\\.img|system\\.raw\\.img|factoryfs\\.(img|rfs)|" +
+            "system\\.(rfs|yaffs2?|ext4|erofs|f2fs)|super(\\.raw)?\\.img|system_[ab]\\.img")
+        /** partitions a vendor's skin adds beside the AOSP ones, mounted at the root under their own name: Xiaomi
+         *  mi_ext (HyperOS apps and ro.mi.os.*), OPPO/realme/OnePlus my_*, vivo vgc */
+        private val SKIN_PARTITION = Regex("mi_ext|my_[a-z]+|vgc|prism|optics")
         /** Апплеты toolbox Android 2.3–6.0 (ссылка создаётся, только если апплет есть в бинарнике). */
         private val TOOLBOX_APPLETS = listOf(
             "cat", "chcon", "chmod", "chown", "clear", "cmp", "cp", "date", "dd", "df", "dmesg", "du", "getenforce",

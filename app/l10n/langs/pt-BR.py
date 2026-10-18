@@ -28,7 +28,7 @@ S = {
     "start": "Iniciar",
     "rename": "Renomear",
     "help_title": "Firmwares compatíveis",
-    "help_text": "• Android 2.3 e 4.0–4.4: suporte principal; 5.x–6.x: experimental.\n• Apenas firmware ARM de 32 bits (armeabi / armeabi-v7a).\n\nFormatos:\n• ZIP de recovery CWM/TWRP (MIUI, CyanogenMod, ports, a maioria das ROMs custom);\n• Samsung: .tar / .tar.md5 do Odin ou ZIP com AP_*.tar.md5;\n• imagens de fábrica do Google (.tgz / .zip);\n• system.img (ext4, sparse), backup TWRP system.ext4.win;\n• OTA com system.new.dat(.br) + system.transfer.list.\n\nO ideal é o arquivo conter boot.img: dele vem a ordem de inicialização dos serviços.",
+    "help_text": "• Android 2.3–4.4: firmware ARM de 32 bits, via QEMU.\n• Android 5.0–17: firmware arm64 e GSI, nativamente no celular.\n\nFormatos:\n• ZIP de recovery CWM/TWRP (MIUI, CyanogenMod, ports, a maioria das ROMs custom);\n• Samsung: .tar / .tar.md5 do Odin ou ZIP com AP_*.tar.md5;\n• imagens de fábrica do Google (.tgz / .zip);\n• system.img (ext4, sparse), backup TWRP system.ext4.win;\n• OTA com system.new.dat(.br) + system.transfer.list.\n\nO ideal é o arquivo conter boot.img: dele vem a ordem de inicialização dos serviços.",
     "vs_screen": "Tela do convidado",
     "vs_fixed_2x": "O Android 2.x usa tela fixa de 480×800 a 240 dpi.",
     "vs_screen_hint": "Quanto menor a tela, mais rápido o sistema.",

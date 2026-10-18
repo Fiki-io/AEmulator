@@ -28,7 +28,7 @@ S = {
     "start": "Запустити",
     "rename": "Перейменувати",
     "help_title": "Які прошивки підходять",
-    "help_text": "• Android 2.3, 4.0–4.4 — основна підтримка; 5.x–6.x — експериментально.\n• Лише 32-бітні ARM-прошивки (armeabi / armeabi-v7a).\n\nФормати:\n• ZIP для CWM/TWRP (MIUI, CyanogenMod, порти, більшість кастомних прошивок);\n• Samsung: .tar / .tar.md5 з Odin або ZIP з AP_*.tar.md5;\n• factory-образи Google (.tgz / .zip);\n• system.img (ext4, sparse), TWRP-бекап system.ext4.win;\n• OTA з system.new.dat(.br) + system.transfer.list.\n\nНайкраще, якщо в архіві є boot.img — з нього береться порядок запуску служб.",
+    "help_text": "• Android 2.3–4.4: 32-бітні ARM-прошивки, працюють через QEMU.\n• Android 5.0–17: arm64-прошивки та GSI, працюють нативно на телефоні.\n\nФормати:\n• ZIP для CWM/TWRP (MIUI, CyanogenMod, порти, більшість кастомних прошивок);\n• Samsung: .tar / .tar.md5 з Odin або ZIP з AP_*.tar.md5;\n• factory-образи Google (.tgz / .zip);\n• system.img (ext4, sparse), TWRP-бекап system.ext4.win;\n• OTA з system.new.dat(.br) + system.transfer.list.\n\nНайкраще, якщо в архіві є boot.img — з нього береться порядок запуску служб.",
     "vs_screen": "Екран гостя",
     "vs_fixed_2x": "Для Android 2.x екран фіксований: 480×800, 240 dpi.",
     "vs_screen_hint": "Що менший екран — то швидше працює система.",

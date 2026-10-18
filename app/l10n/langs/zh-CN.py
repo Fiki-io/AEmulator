@@ -28,7 +28,7 @@ S = {
     "start": "启动",
     "rename": "重命名",
     "help_title": "支持的固件",
-    "help_text": "• Android 2.3 和 4.0–4.4：主要支持；5.x–6.x：实验性。\n• 仅支持 32 位 ARM 固件（armeabi / armeabi-v7a）。\n\n格式：\n• CWM/TWRP 卡刷 ZIP（MIUI、CyanogenMod、移植包、大多数第三方 ROM）；\n• 三星：Odin .tar / .tar.md5，或包含 AP_*.tar.md5 的 ZIP；\n• Google 出厂镜像（.tgz / .zip）；\n• system.img（ext4、sparse），TWRP 备份 system.ext4.win；\n• 含 system.new.dat(.br) + system.transfer.list 的 OTA 包。\n\n压缩包中最好包含 boot.img：服务启动顺序从中读取。",
+    "help_text": "• Android 2.3–4.4：32 位 ARM 固件，通过 QEMU 运行。\n• Android 5.0–17：arm64 固件和 GSI，在手机上原生运行。\n\n格式：\n• CWM/TWRP 卡刷 ZIP（MIUI、CyanogenMod、移植包、大多数第三方 ROM）；\n• 三星：Odin .tar / .tar.md5，或包含 AP_*.tar.md5 的 ZIP；\n• Google 出厂镜像（.tgz / .zip）；\n• system.img（ext4、sparse），TWRP 备份 system.ext4.win；\n• 含 system.new.dat(.br) + system.transfer.list 的 OTA 包。\n\n压缩包中最好包含 boot.img：服务启动顺序从中读取。",
     "vs_screen": "客户机屏幕",
     "vs_fixed_2x": "Android 2.x 使用固定的 480×800、240 dpi 屏幕。",
     "vs_screen_hint": "屏幕越小，系统越快。",

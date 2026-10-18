@@ -28,7 +28,7 @@ S = {
     "start": "Iniciar",
     "rename": "Renombrar",
     "help_title": "Firmware compatible",
-    "help_text": "• Android 2.3 y 4.0–4.4: soporte principal; 5.x–6.x: experimental.\n• Solo firmware ARM de 32 bits (armeabi / armeabi-v7a).\n\nFormatos:\n• ZIP de recovery CWM/TWRP (MIUI, CyanogenMod, ports, la mayoría de ROM personalizadas);\n• Samsung: .tar / .tar.md5 de Odin o ZIP con AP_*.tar.md5;\n• imágenes de fábrica de Google (.tgz / .zip);\n• system.img (ext4, sparse), copia TWRP system.ext4.win;\n• OTA con system.new.dat(.br) + system.transfer.list.\n\nLo mejor es que el archivo incluya boot.img: de él se toma el orden de arranque de los servicios.",
+    "help_text": "• Android 2.3–4.4: firmware ARM de 32 bits, mediante QEMU.\n• Android 5.0–17: firmware arm64 y GSI, de forma nativa en el teléfono.\n\nFormatos:\n• ZIP de recovery CWM/TWRP (MIUI, CyanogenMod, ports, la mayoría de ROM personalizadas);\n• Samsung: .tar / .tar.md5 de Odin o ZIP con AP_*.tar.md5;\n• imágenes de fábrica de Google (.tgz / .zip);\n• system.img (ext4, sparse), copia TWRP system.ext4.win;\n• OTA con system.new.dat(.br) + system.transfer.list.\n\nLo mejor es que el archivo incluya boot.img: de él se toma el orden de arranque de los servicios.",
     "vs_screen": "Pantalla invitada",
     "vs_fixed_2x": "Android 2.x usa una pantalla fija de 480×800 a 240 dpi.",
     "vs_screen_hint": "Una pantalla más pequeña hace el sistema más rápido.",

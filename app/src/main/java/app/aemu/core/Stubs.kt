@@ -53,6 +53,50 @@ class RilStub(
         return true
     }
 
+    /**
+     * Incoming SMS from [from], delivered by the modem like on a phone (UNSOL_RESPONSE_NEW_SMS with a GSM
+     * SMS-DELIVER PDU), so every version from 2.3 on stores it, shows the notification and plays the tone.
+     * The text goes as UCS-2; longer texts are split into concatenated parts (UDH, 67 characters each).
+     */
+    fun sms(from: String, text: String): Boolean {
+        val o = out ?: return false
+        val parts = if (text.length <= 70) listOf(text) else text.chunked(67)
+        val ref = (System.nanoTime() and 0xff).toInt()
+        parts.forEachIndexed { i, part ->
+            unsol(o, UNSOL_RESPONSE_NEW_SMS, str(smsPdu(from, part, if (parts.size > 1) Triple(ref, parts.size, i + 1) else null)))
+        }
+        return true
+    }
+
+    private fun smsPdu(from: String, text: String, concat: Triple<Int, Int, Int>?): String {
+        val b = ByteArrayOutputStream()
+        b.write(0)                                          // no SMSC address
+        b.write(if (concat != null) 0x44 else 0x04)         // SMS-DELIVER, no more messages, UDHI for parts
+        val intl = from.startsWith("+")
+        val digits = from.filter { it.isDigit() }.ifEmpty { "0" }
+        b.write(digits.length); b.write(if (intl) 0x91 else 0x81)
+        b.write(semiOctets(digits))
+        b.write(0)                                          // PID
+        b.write(0x08)                                       // DCS: UCS-2
+        val t = java.util.Calendar.getInstance()
+        val tz = t.timeZone.getOffset(t.timeInMillis) / (15 * 60_000)
+        val stamp = "%02d%02d%02d%02d%02d%02d".format(t.get(java.util.Calendar.YEAR) % 100, t.get(java.util.Calendar.MONTH) + 1,
+            t.get(java.util.Calendar.DAY_OF_MONTH), t.get(java.util.Calendar.HOUR_OF_DAY), t.get(java.util.Calendar.MINUTE), t.get(java.util.Calendar.SECOND))
+        b.write(semiOctets(stamp))
+        val tzBcd = semiOctets("%02d".format(kotlin.math.abs(tz)))[0].toInt() or (if (tz < 0) 0x08 else 0)
+        b.write(tzBcd)
+        val ud = text.toByteArray(Charsets.UTF_16BE)
+        val udh = concat?.let { (r, n, k) -> byteArrayOf(5, 0, 3, r.toByte(), n.toByte(), k.toByte()) } ?: ByteArray(0)
+        b.write(udh.size + ud.size); b.write(udh); b.write(ud)
+        return b.toByteArray().joinToString("") { "%02X".format(it.toInt() and 0xff) }
+    }
+
+    /** BCD with swapped nibbles, padded with F (addresses and time stamps of a PDU) */
+    private fun semiOctets(d: String): ByteArray {
+        val s = if (d.length % 2 == 1) d + "F" else d
+        return ByteArray(s.length / 2) { i -> ((s[2 * i + 1].digitToIntOrNull(16) ?: 0xf) shl 4 or (s[2 * i].digitToInt(16))).toByte() }
+    }
+
     private val connects = ArrayDeque<Long>()
     /** set when telephony keeps crashing against the fake modem: fall back to "radio unavailable" */
     @Volatile private var safeMode = false
@@ -83,7 +127,16 @@ class RilStub(
             val b = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
             val request = b.getInt()
             val serial = b.getInt()
-            val (err, payload) = runCatching { handle(request) }.getOrElse { 0 to ByteArray(0) }
+            val (err, payload) = runCatching {
+                when {
+                    request == RIL_REQUEST_SIM_IO -> 0 to simIo(b)
+                    // Qualcomm's own requests travel as OEM_HOOK_RAW with a "QOEMHOOK" header. The telephony of CAF
+                    // builds treats a failure as "this modem has no such request" and goes on; a success with a
+                    // made-up payload is parsed and crashes com.android.phone (MIUI 7 on 5.0: modem capability)
+                    request == RIL_REQUEST_OEM_HOOK_RAW && isQcomHook(body) -> E_GENERIC_FAILURE to ByteArray(0)
+                    else -> handle(request)
+                }
+            }.getOrElse { 0 to ByteArray(0) }
             val resp = ByteArrayOutputStream()
             resp.write(le(0)); resp.write(le(serial)); resp.write(le(err)); resp.write(payload)
             frame(o, resp.toByteArray())
@@ -119,6 +172,11 @@ class RilStub(
         }
     }
 
+    private fun isQcomHook(body: ByteArray): Boolean {
+        val tag = "QOEMHOOK".toByteArray()
+        return body.size >= 12 + tag.size && tag.indices.all { body[12 + it] == tag[it] }
+    }
+
     private fun handle(req: Int): Pair<Int, ByteArray> {
         val (mcc, mnc) = operator
         return when (req) {
@@ -134,7 +192,6 @@ class RilStub(
             RIL_REQUEST_OPERATOR -> 0 to strs(OPERATOR_NAME, OPERATOR_NAME, mcc + mnc)
             RIL_REQUEST_SETUP_DATA_CALL -> 0 to dataCall(single = true)
             RIL_REQUEST_DATA_CALL_LIST -> 0 to dataCall(single = false)
-            RIL_REQUEST_SIM_IO -> 0 to (le(0x6A) + le(0x82) + str(null))   // "file not found": no SIM records
             RIL_REQUEST_GET_IMEI -> 0 to str(imei)
             RIL_REQUEST_GET_IMEISV -> 0 to str(IMEISV)
             RIL_REQUEST_BASEBAND_VERSION -> 0 to str(BASEBAND)
@@ -153,6 +210,29 @@ class RilStub(
             // shorter payloads crash com.android.phone (Samsung reads [0], Qualcomm IMS state reads [1])
             else -> 0 to (le(4) + ByteArray(32))
         }
+    }
+
+    /**
+     * SIM file access. Only EF_ICCID is answered: from 5.1 SubscriptionController creates the SIM's subscription
+     * from its ICCID, and without one the system shows "No SIM card" (no SMS, no mobile network). Everything else
+     * stays "file not found" (no contacts, SMS or settings stored on the SIM).
+     */
+    private fun simIo(b: ByteBuffer): ByteArray {
+        val notFound = le(0x6A) + le(0x82) + str(null)
+        val command = runCatching { b.getInt() }.getOrDefault(0)
+        val file = runCatching { b.getInt() }.getOrDefault(0)
+        if (file != EF_ICCID) return notFound
+        return when (command) {
+            SIM_GET_RESPONSE -> le(0x90) + le(0) + str("0000000a2fe204000fa0aa01020000")   // transparent EF, 10 bytes
+            SIM_READ_BINARY -> le(0x90) + le(0) + str(iccid())
+            else -> notFound
+        }
+    }
+
+    /** ICCID in the SIM's swapped-BCD form: 89 (telecom) + the operator's MCC + digits from the IMEI */
+    private fun iccid(): String {
+        val digits = ("89" + operator.first + imei.filter { it.isDigit() } + "0000000000").take(20)
+        return digits.chunked(2).joinToString("") { "${it[1]}${it[0]}" }
     }
 
     private fun afterPower(o: OutputStream, args: ByteBuffer) {
@@ -252,6 +332,10 @@ class RilStub(
         private const val UNSOL_RADIO_STATE_CHANGED = 1000
         private const val UNSOL_RESPONSE_CALL_STATE_CHANGED = 1001
         private const val UNSOL_CALL_RING = 1018
+        private const val UNSOL_RESPONSE_NEW_SMS = 1003
+        private const val EF_ICCID = 0x2FE2
+        private const val SIM_READ_BINARY = 176
+        private const val SIM_GET_RESPONSE = 192
         private const val CALL_ACTIVE = 0
         private const val CALL_INCOMING = 4
         private const val RIL_REQUEST_LAST_CALL_FAIL_CAUSE = 18
@@ -275,6 +359,7 @@ class RilStub(
         private const val RIL_REQUEST_SEND_SMS_EXPECT_MORE = 26
         private const val RIL_REQUEST_SETUP_DATA_CALL = 27
         private const val RIL_REQUEST_SIM_IO = 28
+        private const val RIL_REQUEST_OEM_HOOK_RAW = 59
         private const val RIL_REQUEST_GET_IMEI = 38
         private const val RIL_REQUEST_GET_IMEISV = 39
         private const val RIL_REQUEST_QUERY_FACILITY_LOCK = 42
@@ -302,6 +387,7 @@ class VoldStub(
     sockName: String = "vold",
     /** остальные тома прошивки (съёмные карты, USB): сообщаем о них как о «нет носителя» */
     private val others: List<String> = emptyList(),
+    private val api: Int = 19,
 ) {
     @Volatile var state = MOUNTED
     private val label = mountPoint.substringAfterLast('/').ifEmpty { "sdcard" }
@@ -343,6 +429,22 @@ class VoldStub(
         val sub = args.getOrElse(1) { "" }
         var after: (() -> Unit)? = null
         val reply: List<String> = when {
+            // 6.0 vold: volumes are announced as events. One emulated volume over the shared folder; MountService
+            // asks to mount it and gets its paths (/storage/emulated/<user>, kept in /data/media).
+            api >= 23 && head == "volume" && sub == "reset" -> {
+                after = { event("650 emulated 2 \"\" \"\"", "651 emulated 0") }
+                listOf("200 Command succeeded")
+            }
+            api >= 23 && head == "volume" && sub == "mount" -> {
+                val id = args.getOrElse(2) { "emulated" }
+                after = { event("651 $id 1", "656 $id /data/media", "655 $id /storage/emulated", "651 $id 2") }
+                listOf("200 Command succeeded")
+            }
+            api >= 23 && head == "volume" && sub == "unmount" -> {
+                val id = args.getOrElse(2) { "emulated" }
+                after = { event("651 $id 5", "651 $id 0") }
+                listOf("200 Command succeeded")
+            }
             // с томами из storage_list (4.x) сообщаем только о них: основное хранилище там эмулируемое,
             // а незнакомый путь MountService Samsung считает ошибкой и обрывает список
             head == "volume" && sub == "list" -> (if (others.isEmpty()) listOf("110 $label $mountPoint $state")
@@ -357,7 +459,9 @@ class VoldStub(
             head == "asec" && sub == "list" -> listOf("200 Asec listed.")
             head == "asec" && sub == "path" -> listOf("211 /mnt/asec/${args.getOrElse(2) { "" }}")
             head == "obb" && sub == "list" -> listOf("200 Obb listed.")
-            head == "cryptfs" -> listOf("200 0 0")
+            // the answer is one number that MountService parses whole (Samsung's moveDumpstates dies in system_server
+            // on anything else); cryptocomplete: 1 = not encrypted
+            head == "cryptfs" -> listOf(if (sub == "cryptocomplete") "200 1" else "200 0")
             else -> listOf("200 ok")
         }
         send(out, reply.map { withSeq(it, seq) })
@@ -373,7 +477,13 @@ class VoldStub(
         return "$code $seq${line.substring(sp)}"
     }
 
+    private fun event(vararg msgs: String) {
+        val list = synchronized(clients) { ArrayList(clients) }
+        for (c in list) runCatching { send(c.outputStream, msgs.toList()) }
+    }
+
     fun announce(from: Int, to: Int) {
+        if (api >= 23) return
         val msg = "605 Volume $label $mountPoint state changed from $from (${name(from)}) to $to (${name(to)})"
         val list = synchronized(clients) { ArrayList(clients) }
         for (c in list) runCatching { send(c.outputStream, listOf(msg)) }

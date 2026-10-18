@@ -15,3 +15,5 @@ keystore/
 keystore.properties
 *.jks
 *.keystore
+release-apks/
+.kotlin/

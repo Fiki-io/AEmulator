@@ -28,6 +28,7 @@ def render(code):
     L.append('<div align="center">\n')
     L.append(f'<img src="{up}docs/assets/logo.png" width="128" alt="AEmulator logo"/>\n')
     L.append("# AEmulator\n")
+    L.append("*Based on the original [SENSES emulator](https://github.com/Istratii-tech/SENSES)*\n")
     L.append(f"**{t['tagline']}**\n")
     L.append(
         f'[![Version](https://img.shields.io/badge/version-{VERSION}-3D5AFE?style=for-the-badge)]({REPO}/releases) '
@@ -71,7 +72,7 @@ def render(code):
     L.append(f"- 💬 {t['forum']}: [aeforum.uxazuu.space]({FORUM})")
     L.append(f"- 📣 {t['l_channel']}: [@aemulatorofficial]({CHANNEL})")
     L.append(f"- 👤 {t['l_author']}: [uxazu]({AUTHOR})")
-    L.append(f"- 🧬 {t['l_orig']}: [t.me/istratiit_ech]({ORIGINAL})\n")
+    L.append(f"- 🧬 {t['l_orig']}: [t.me/istratii_tech1]({ORIGINAL})\n")
     L.append(f"## 📄 {t['license_title']}\n")
     L.append(t["license_text"] + "\n")
     if code in RTL:

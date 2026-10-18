@@ -17,6 +17,8 @@ class VmPaths(val ctx: Context, val id: String) {
     val propsTemplate: File get() = File(dir, "props.base")
     val fb: File get() = File(root, "dev/graphics/fb0")
     val binderSock: File get() = File(bin, "binder.sock")
+    val hwbinderSock: File get() = File(bin, "hwbinder.sock")
+    val vndbinderSock: File get() = File(bin, "vndbinder.sock")
     val inputSock: File get() = File(bin, "input.sock")
     val frameSock: File get() = File(bin, "frame.sock")
     val glSock: File get() = File(root, "dev/socket/gl")
@@ -69,7 +71,7 @@ object ImageStore {
      * never touches another), a fresh /data (factory reset: apps, settings and accounts start empty; dalvik-cache is kept
      * so the first boot is quick) or a full copy of it, its own memory-card folder and settings.
      */
-    fun clone(ctx: Context, src: GuestImage, name: String, copyData: Boolean, progress: (String) -> Unit): GuestImage {
+    fun clone(ctx: Context, src: GuestImage, name: String, copyData: Boolean, customSettings: VmSettings? = null, cancelled: () -> Boolean = { false }, progress: (String) -> Unit): GuestImage {
         val from = VmPaths(ctx, src.id)
         val need = du(from.root) + du(File(from.root, "system").canonicalFile).takeIf { File(from.root, "system").canonicalPath != File(from.root, "system").path } .let { it ?: 0 }
         val free = imagesDir(ctx).usableSpace
@@ -81,6 +83,7 @@ object ImageStore {
             val skipData = setOf("data", "system", "user", "property", "anr", "tombstones", "backup", "misc/wifi", "misc/keystore",
                 "local/tmp", "app", "app-private", "app-asec")
             fun copy(a: File, b: File, rel: String) {
+                if (cancelled()) error("cancelled")
                 val st = runCatching { Os.lstat(a.path) }.getOrNull() ?: return
                 when {
                     android.system.OsConstants.S_ISLNK(st.st_mode) -> runCatching { Os.symlink(Os.readlink(a.path), b.path) }
@@ -112,7 +115,9 @@ object ImageStore {
             // ownership table is keyed by inode: the fresh copy gets its own on first boot
             if (!copyData) { File(to.root, "dhd.owners").delete(); File(to.root, "dhd.owners.seeded").delete() }
             listOf("props.base").forEach { n -> File(from.dir, n).takeIf { it.isFile }?.copyTo(File(to.dir, n), true) }
-            val img = src.copy(id = id, name = name, baseId = src.id, createdAt = System.currentTimeMillis(),
+            val img = src.copy(id = id, name = name, baseId = src.baseId.ifEmpty { src.id },
+                settings = customSettings ?: src.settings,
+                createdAt = System.currentTimeMillis(),
                 lastBootMs = 0, bootCount = 0, sizeBytes = du(to.dir))
             save(ctx, img)
             return img
@@ -120,6 +125,30 @@ object ImageStore {
             wipe(to.dir)
             throw t
         }
+    }
+
+    /**
+     * Factory reset without a recovery: the user's part of /data (apps, settings, accounts) and /cache are emptied,
+     * the rest of /data (dalvik-cache, what the import prepared) stays, like in a fresh container.
+     */
+    fun resetData(ctx: Context, id: String) {
+        val root = VmPaths(ctx, id).root
+        for (n in RESET_DIRS) {
+            val d = File(root, "data/$n")
+            if (!d.exists()) continue
+            d.listFiles()?.forEach { wipe(it) }
+        }
+        File(root, "cache").listFiles()?.forEach { wipe(it) }
+        get(ctx, id)?.let { save(ctx, it.copy(sizeBytes = du(VmPaths(ctx, id).dir))) }
+    }
+
+    private val RESET_DIRS = listOf("data", "system", "user", "property", "anr", "tombstones", "backup", "misc/wifi",
+        "misc/keystore", "local/tmp", "app", "app-private", "app-asec", "media", "user_de", "system_de", "system_ce", "misc_de", "misc_ce")
+
+    /** Changes the stored image from its current state (not from a copy read earlier: the machine updates boot counters). */
+    @Synchronized
+    fun update(ctx: Context, id: String, f: (GuestImage) -> GuestImage) {
+        get(ctx, id)?.let { save(ctx, f(it)) }
     }
 
     fun wipe(f: File) {

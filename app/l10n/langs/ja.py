@@ -28,7 +28,7 @@ S = {
     "start": "起動",
     "rename": "名前を変更",
     "help_title": "対応ファームウェア",
-    "help_text": "• Android 2.3 と 4.0〜4.4：主なサポート、5.x〜6.x：試験的。\n• 32 ビット ARM ファームウェアのみ（armeabi / armeabi-v7a）。\n\n形式：\n• CWM/TWRP リカバリー ZIP（MIUI、CyanogenMod、移植版、多くのカスタム ROM）\n• Samsung：Odin の .tar / .tar.md5、または AP_*.tar.md5 を含む ZIP\n• Google ファクトリーイメージ（.tgz / .zip）\n• system.img（ext4、sparse）、TWRP バックアップ system.ext4.win\n• system.new.dat(.br) + system.transfer.list を含む OTA\n\nアーカイブに boot.img があると最適です。サービスの起動順序はそこから読み取ります。",
+    "help_text": "• Android 2.3〜4.4：32 ビット ARM ファームウェア、QEMU で動作。\n• Android 5.0〜17：arm64 ファームウェアと GSI、スマホ上でネイティブ動作。\n\n形式：\n• CWM/TWRP リカバリー ZIP（MIUI、CyanogenMod、移植版、多くのカスタム ROM）\n• Samsung：Odin の .tar / .tar.md5、または AP_*.tar.md5 を含む ZIP\n• Google ファクトリーイメージ（.tgz / .zip）\n• system.img（ext4、sparse）、TWRP バックアップ system.ext4.win\n• system.new.dat(.br) + system.transfer.list を含む OTA\n\nアーカイブに boot.img があると最適です。サービスの起動順序はそこから読み取ります。",
     "vs_screen": "ゲスト画面",
     "vs_fixed_2x": "Android 2.x は 480×800・240 dpi の固定画面です。",
     "vs_screen_hint": "画面が小さいほどシステムが速くなります。",

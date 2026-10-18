@@ -25,7 +25,13 @@ data class VmSettings(
     val lowRam: Boolean = false,
     val showFrame: Boolean = false,
     val showNavBar: Boolean = true,
+    /** buttons of the bar under the screen, in order: back home recents menu search volup voldown power dpad */
+    val navKeys: String = NAV_DEFAULT,
+    /** size of the button bar: 0 compact, 1 large */
+    val navSize: Int = 0,
     val keepScreenOn: Boolean = true,
+    /** the guest phone's notification LED drawn above its screen */
+    val showLed: Boolean = true,
     val mtMode: Int = 0,
     /** старый движок для 2.x (GL через pbuffer, только GLES 1.x) — запасной вариант */
     val legacyEngine: Boolean = false,
@@ -33,6 +39,8 @@ data class VmSettings(
     val ramMb: Int = 0,
     /** emulate the radio (RIL); off = tablet-like firmware without telephony */
     val radio: Boolean = true,
+    /** hardware 32-bit (AArch32 EL0) bypass without translator on supported CPUs */
+    val native32: Boolean = false,
     /** IMEI reported by the fake modem; blank = default sample IMEI */
     val imei: String = "",
     /** extra qemu options; KEY=VALUE tokens are passed as environment variables */
@@ -42,11 +50,14 @@ data class VmSettings(
         .put("width", width).put("height", height).put("density", density)
         .put("gpu", gpu).put("hwui", hwui).put("jit", jit).put("fullDexopt", fullDexopt).put("fbHz", fbHz)
         .put("touchHz", touchHz).put("netProxy", netProxy).put("lowRam", lowRam)
-        .put("showFrame", showFrame).put("showNavBar", showNavBar)
-        .put("keepScreenOn", keepScreenOn).put("mtMode", mtMode).put("legacyEngine", legacyEngine)
-        .put("ramMb", ramMb).put("radio", radio).put("imei", imei).put("qemuArgs", qemuArgs)
+        .put("showFrame", showFrame).put("showNavBar", showNavBar).put("navKeys", navKeys).put("navSize", navSize)
+        .put("keepScreenOn", keepScreenOn).put("showLed", showLed).put("mtMode", mtMode).put("legacyEngine", legacyEngine)
+        .put("ramMb", ramMb).put("radio", radio).put("native32", native32).put("imei", imei).put("qemuArgs", qemuArgs)
 
     companion object {
+        const val NAV_DEFAULT = "back,home,recents,menu"
+        val NAV_ALL = listOf("back", "home", "recents", "menu", "search", "voldown", "volup", "power", "dpad")
+
         /** Luhn-valid sample IMEI from the standard; the guest has no real modem */
         const val DEFAULT_IMEI = "490154203237518"
 
@@ -75,11 +86,15 @@ data class VmSettings(
                 lowRam = o.optBoolean("lowRam", d.lowRam),
                 showFrame = o.optBoolean("showFrame", d.showFrame),
                 showNavBar = o.optBoolean("showNavBar", d.showNavBar),
+                navKeys = o.optString("navKeys", d.navKeys),
+                navSize = o.optInt("navSize", d.navSize),
                 keepScreenOn = o.optBoolean("keepScreenOn", d.keepScreenOn),
+                showLed = o.optBoolean("showLed", d.showLed),
                 mtMode = o.optInt("mtMode", d.mtMode),
                 legacyEngine = o.optBoolean("legacyEngine", false),
                 ramMb = o.optInt("ramMb", 0),
                 radio = o.optBoolean("radio", true),
+                native32 = o.optBoolean("native32", false),
                 imei = o.optString("imei", ""),
                 qemuArgs = o.optString("qemuArgs", ""),
             )
@@ -101,9 +116,11 @@ data class GuestService(
     val restart: Boolean = false,
     /** вендорский демон: если упадёт — не страшно */
     val optional: Boolean = false,
+    /** not started at boot: the guest asks for it with ctl.start (a service outside init's started classes) */
+    val onDemand: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
-        .put("optional", optional)
+        .put("optional", optional).put("onDemand", onDemand)
         .put("name", name)
         .put("argv", JSONArray(argv))
         .put("sockets", JSONObject(sockets as Map<*, *>))
@@ -125,6 +142,7 @@ data class GuestService(
                 delayMs = o.optLong("delayMs", 0),
                 restart = o.optBoolean("restart", false),
                 optional = o.optBoolean("optional", false),
+                onDemand = o.optBoolean("onDemand", false),
             )
         }
     }
@@ -167,7 +185,11 @@ data class GuestImage(
     val displayVersion: String get() = "Android $release (API $api)"
 
     /** Движок с учётом выбора пользователя. */
-    fun effective(): GuestImage = copy(engine = if (settings.legacyEngine && api < 14) Engine.GB else Engine.KK)
+    fun effective(): GuestImage = copy(engine = when {
+        abi == "arm64-v8a" -> Engine.N64
+        settings.legacyEngine && api < 14 -> Engine.GB
+        else -> Engine.KK
+    })
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("release", release).put("api", api)

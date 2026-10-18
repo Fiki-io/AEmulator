@@ -28,7 +28,7 @@ S = {
     "start": "시작",
     "rename": "이름 변경",
     "help_title": "지원 펌웨어",
-    "help_text": "• Android 2.3 및 4.0–4.4: 주요 지원, 5.x–6.x: 실험적.\n• 32비트 ARM 펌웨어만(armeabi / armeabi-v7a).\n\n형식:\n• CWM/TWRP 리커버리 ZIP(MIUI, CyanogenMod, 포팅, 대부분의 커스텀 롬)\n• 삼성: Odin .tar / .tar.md5 또는 AP_*.tar.md5가 든 ZIP\n• Google 팩토리 이미지(.tgz / .zip)\n• system.img(ext4, sparse), TWRP 백업 system.ext4.win\n• system.new.dat(.br) + system.transfer.list가 있는 OTA\n\n아카이브에 boot.img가 있으면 가장 좋습니다. 서비스 시작 순서를 여기서 읽습니다.",
+    "help_text": "• Android 2.3–4.4: 32비트 ARM 펌웨어, QEMU로 실행.\n• Android 5.0–17: arm64 펌웨어와 GSI, 휴대폰에서 네이티브 실행.\n\n형식:\n• CWM/TWRP 리커버리 ZIP(MIUI, CyanogenMod, 포팅, 대부분의 커스텀 롬)\n• 삼성: Odin .tar / .tar.md5 또는 AP_*.tar.md5가 든 ZIP\n• Google 팩토리 이미지(.tgz / .zip)\n• system.img(ext4, sparse), TWRP 백업 system.ext4.win\n• system.new.dat(.br) + system.transfer.list가 있는 OTA\n\n아카이브에 boot.img가 있으면 가장 좋습니다. 서비스 시작 순서를 여기서 읽습니다.",
     "vs_screen": "게스트 화면",
     "vs_fixed_2x": "Android 2.x는 480×800, 240 dpi 고정 화면을 씁니다.",
     "vs_screen_hint": "화면이 작을수록 시스템이 빨라집니다.",
