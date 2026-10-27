@@ -465,7 +465,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         }
         lmk = GuestLmk(paths.root, s.lowRam, ::log, s.ramMb).also { it.start() }
         val netCfg = if (s.netProxy) net.start() else GuestRunner.NetConfig()
-        runner.sdcardHost = sd
         val r = GuestRunner(paths, img, netCfg.copy(glPath = if (s.gpu) "/dev/socket/gl" else null)).also {
             it.sdcardHost = sd
             // отладка: файл run/binder.verbose включает полную трассировку binder в binder-warn.log
