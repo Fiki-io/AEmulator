@@ -19,11 +19,6 @@ class GuestRunner(
     var singleTouch = false
     var binderVerbose = false
     var sdcardHost: File? = null
-    /** user's extra qemu options from firmware settings: KEY=VALUE tokens become env vars, the rest go to qemu */
-    var userQemuArgs: String = ""
-
-    private val userTokens: List<String> get() = Regex("""("[^"]*"|\S+)""").findAll(userQemuArgs).map { it.value.trim('"') }.toList()
-    private fun isEnvToken(t: String) = !t.startsWith("-") && Regex("^[A-Z_][A-Z0-9_]*=").containsMatchIn(t)
 
     val engine: Engine get() = img.engine
     val kernel: Kernel64 get() = Kernel64.forApi(img.api)
@@ -80,7 +75,6 @@ class GuestRunner(
         e["AEMU64_FB"] = "${img.settings.width}x${img.settings.height}"
         // debugging: run/crash.report makes the runner print pc/lr and their mappings on a fatal signal
         if (File(paths.bin, "crash.report").exists()) e["AEMU64_CRASH"] = "1"
-        for (t in userTokens.filter(::isEnvToken)) e[t.substringBefore('=')] = t.substringAfter('=')
         for ((k, v) in extra) when {
             k.startsWith("DHD_SOCK_") -> e["AEMU64_SOCK_" + k.removePrefix("DHD_SOCK_")] = v
             k == "DHD_UID" -> e["AEMU64_ID"] = v + "," + (extra["DHD_GID"] ?: v)

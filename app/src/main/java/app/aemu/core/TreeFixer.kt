@@ -116,8 +116,6 @@ class TreeFixer(
         fixThemeXml()
         parkWhetstone()
         parkQcomServices()
-        swapMtkAudioHal()
-        eglConfig(img.settings.gpu)
         makeDataDirs()
         miuiSdkFiles()
         makeUserZeroLink()
@@ -137,7 +135,6 @@ class TreeFixer(
             File(root, dir).listFiles().orEmpty().filter { it.isDirectory && it.name.contains("webview", true) }
                 .flatMap { it.listFiles().orEmpty().filter { f -> f.isFile && f.name.endsWith(".apk") } }
                 .forEach { WebView64.prefer64(it, log) }
-        vendorChecks()
         scriptShebangs()
         samsungEfs()
         keyLayout()
@@ -175,18 +172,6 @@ class TreeFixer(
         }
     }
 
-    private fun qcomAudioFlinger(): Boolean = runCatching {
-        val af = File(root, "system/lib/libaudioflinger.so")
-        af.isFile && String(af.readBytes(), Charsets.ISO_8859_1).contains("setFmVolume")
-    }.getOrDefault(false)
-
-    /**
-     * MediaTek 4.x: libaudioflinger loads the primary HAL from /system/lib/libaudio.primary.default.so
-     * (AudioMTKHardware, which needs the MTK sound driver — silent here). Park it as libaudio.mtk.so and put
-     * our HAL there; it forwards the DcRemove filter AudioFlinger links from that library to the original.
-     */
-    private fun swapMtkAudioHal() {
-    }
 
 
     /**
@@ -649,43 +634,6 @@ class TreeFixer(
         installNative64()
     }
 
-    /**
-     * The 2.x linker gives libraries that are not prelinked addresses from a fixed range of its own. AOSP's is
-     * 0x80000000 - 0x90000000; Sony's 2.3 (Xperia 2011) uses 0x40000000 - 0x50000000, which is exactly where the
-     * stand's qemu keeps the guest stack and its own mappings: nothing fits ("cannot map library
-     * 'libashmemshim.so'. no vspace available", every service exits with 255). The range is a constant in the
-     * linker — base, size, 1 MB step — and is moved to 0x90000000, which Sony's prelink map leaves free.
-     */
-    private fun linkerLibRange() {
-        if (img.api > 10) return
-        val f = File(root, "system/bin/linker")
-        if (!f.isFile || f.length() > 4_000_000) return
-        runCatching {
-            val d = f.readBytes()
-            val b = java.nio.ByteBuffer.wrap(d).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            var off = 0
-            while (off + 12 <= d.size) {
-                if (b.getInt(off) == 0x40000000 && b.getInt(off + 4) == 0x10000000 && b.getInt(off + 8) == 0x100000) {
-                    b.putInt(off, 0x90000000.toInt())
-                    f.writeBytes(d)
-                    log("linker: range for non-prelinked libraries moved from 0x40000000 to 0x90000000")
-                    break
-                }
-                off += 4
-            }
-        }
-    }
-
-    /** Направляет загрузчик EGL прошивки на GL-мост (или на программный растеризатор). */
-    private fun eglConfig(gpu: Boolean) {
-        if (engine == Engine.N64) return
-    }
-
-
-    private fun isElf64(f: File): Boolean = runCatching {
-        f.inputStream().use { i -> val b = ByteArray(5); i.read(b) == 5 && b[4] == 2.toByte() }
-    }.getOrDefault(false)
-
     private fun sameContent(asset: String, f: File): Boolean = runCatching {
         fun crc(i: java.io.InputStream): Long {
             val c = java.util.zip.CRC32(); val b = ByteArray(1 shl 16)
@@ -694,22 +642,6 @@ class TreeFixer(
         }
         EngineAssets.open(ctx, asset).use { crc(it) } == f.inputStream().use { crc(it) }
     }.getOrDefault(false)
-
-    /** Пустые таблицы xt_qtaguid, на которые гостевая прослойка подменяет /proc/net/xt_qtaguid/… */
-    /**
-     * MediaTek DRVB: кодеки, DRM, камера и даже debuggerd сверяют «платформу» через демон drvbd, а тот
-     * читает efuse через /dev/devmap. На эмуляторе проверка проваливается, каждый клиент 10 с ждёт демон,
-     * а модуль DRM затем нарочно прыгает на 0xddeeaadd (drmserver падает, MediaPlayer зависает намертво).
-     * Проверка отвечает на вызов подписанным ответом, который считает сама библиотека, — поэтому достаточно,
-     * чтобы её внутренние проверки вернули «успех»: ответ получится честный.
-     */
-    private fun vendorChecks() = runCatching {
-        val drvb = File(root, "system/lib/libmtk_drvb.so")
-        if (drvb.isFile) {
-            val n = ElfPatch.returnZero(drvb, setOf("mtk_drvb_basechk", "platform_init", "platform_advchk", "drvb_ext_input"))
-            if (n > 0) log("MediaTek DRVB: platform check disabled ($n func.)")
-        }
-    }.onFailure { log("MediaTek DRVB: failed: ${it.message}") }
 
     private fun qtaguid() = runCatching {
         val d = File(root, "data/.aemu_qtaguid").apply { mkdirs() }
@@ -739,15 +671,7 @@ class TreeFixer(
         }
     }
 
-    private fun assetSize(a: String): Long = runCatching { EngineAssets.size(ctx, a) }.getOrDefault(-1L)
-    private fun installAsset(a: String, f: File) {
-        if (f.isFile && !isLink(f) && f.length() == assetSize(a)) return
-        f.delete()
-        EngineAssets.open(ctx, a).use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-        f.setReadable(true, false); f.setExecutable(true, false)
-    }
-    private fun openGl32(): Boolean = false
-    private fun splitSize(): Long = -1L
+
 
     private fun makeDataDirs() {
         var made = 0
@@ -1176,10 +1100,7 @@ class TreeFixer(
             "usb/type" to "USB", "usb/online" to "0",
         )
         for ((rel, v) in bat) File(base, rel).let { if (!it.isFile) { it.parentFile?.mkdirs(); it.writeText(v + "\n") } }
-        healthdRelativeSysfs(base)
-        personalityNoop()
         parkNfc()
-        mainStackMaps()
         val power = File(root, "sys/power").apply { mkdirs() }
         for (n in listOf("state", "wake_lock", "wake_unlock", "autosleep")) File(power, n).let { if (!it.isFile) it.createNewFile(); it.setWritable(true, false) }
         // узлы питания, которые открывает libhardware_legacy именно этой прошивки (Samsung: dvfslock_ctrl…):
@@ -1574,85 +1495,7 @@ class TreeFixer(
         if (changed) runCatching { f.writeText(xml); log("setup wizard disabled: ${targets.joinToString()}") }
     }
 
-    /**
-     * Static healthd (5.0+) checks the battery files with faccessat, which the stand's qemu does not map into the
-     * guest root: it tests the phone's real /sys and finds no battery. Its path constant becomes the relative
-     * "sys/class/power_supply" (resolved from the services' working directory, run/, where sys links to root/sys).
-     */
-    private fun healthdRelativeSysfs(base: File) {
-        if (img.api < 21) return
-        runCatching {
-            val link = File(paths.bin, "sys")
-            paths.bin.mkdirs()
-            if (!isLink(link)) { wipe(link); Os.symlink(File(root, "sys").absolutePath, link.path) }
-            val hd = File(root, "sbin/healthd").takeIf { it.isFile } ?: return
-            val d = hd.readBytes()
-            val from = "/sys/class/power_supply".toByteArray()
-            val to = "sys/class/power_supply".toByteArray() + 0
-            var n = 0
-            var i = 0
-            while (i <= d.size - from.size) {
-                if (d[i] == from[0] && (0 until from.size).all { d[i + it] == from[it] }) { System.arraycopy(to, 0, d, i, to.size); n++; i += from.size } else i++
-            }
-            if (n > 0) { hd.writeBytes(d); log("healthd: battery sysfs path made relative ($n)") }
-        }.onFailure { log("healthd patch failed: ${it.message}") }
-        if (!base.isDirectory) log("no fake power_supply")
-    }
-
-    /**
-     * bionic 6.0+ starts every 32-bit process with personality(PER_LINUX32) and aborts ("error setting PER_LINUX32
-     * personality") when it fails — and it does on phones without AArch32 (Snapdragon 8 Elite…), qemu passes the
-     * call to the host kernel. The personality syscall stub (mov ip,r7; mov r7,#136; swi 0) gets "mov r0,#0"
-     * instead of the swi, in libc.so and in static binaries (healthd, ueventd…). Done once per image.
-     */
-    private fun personalityNoop() {
-        if (img.api < 23) return
-        val stamp = File(root, ".aemu-personality")
-        if (stamp.isFile && runCatching { stamp.readText().trim().toInt() }.getOrDefault(0) > 0) return
-        val files = listOf(File(root, "system/lib/libc.so")) +
-            listOf("sbin", "system/bin", "system/xbin").flatMap { File(root, it).listFiles().orEmpty().toList() }
-        var n = 0
-        for (f in files) {
-            if (!f.isFile || isLink(f) || f.length() > 8_000_000 || f.length() < 1024) continue
-            runCatching {
-                val d = f.readBytes()
-                if (d[0] != 0x7f.toByte() || d[1] != 'E'.code.toByte()) return@runCatching
-                val b = java.nio.ByteBuffer.wrap(d).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                var hit = false
-                var i = 0
-                while (i + 12 <= d.size) {
-                    // mov ip, r7 ; mov r7, #136 (6.0) or ldr r7, [pc, #x] holding 136 (7.x) ; swi #0
-                    if (b.getInt(i) == 0xe1a0c007.toInt() && b.getInt(i + 8) == 0xef000000.toInt()) {
-                        val w = b.getInt(i + 4)
-                        val nr = when {
-                            w == 0xe3a07088.toInt() -> 136
-                            w and 0xfffff000.toInt() == 0xe59f7000.toInt() ->
-                                (i + 4 + 8 + (w and 0xfff)).takeIf { it + 4 <= d.size }?.let { b.getInt(it) } ?: -1
-                            else -> -1
-                        }
-                        if (nr == 136) { b.putInt(i + 8, 0xe3a00000.toInt()); hit = true }   // swi #0 → mov r0, #0
-                    }
-                    i += 4
-                }
-                if (hit) { f.writeBytes(d); n++ }
-            }
-        }
-        log("personality(PER_LINUX32) made a no-op in $n files")
-        runCatching { stamp.writeText("$n\n") }
-    }
-
-    /**
-     * bionic 6.0 finds the main thread's stack in /proc/self/task/<pid>/maps; qemu only emulates /proc/self/maps,
-     * so the guest parses the host's 64-bit map and ART gets random stack bounds ("Check failed: &stack_variable >
-     * stack_end", then SIGSEGV in zygote). The format string in libc.so becomes "/proc/self/maps".
-     */
-    /**
-     * 5.0+: the NFC app's own watchdog aborts it while the vendor NFC stack initialises under qemu; that
-     * persistent crash loops the whole system. There is no NFC to offer, so the app is moved out of the way.
-     */
     private fun parkNfc() {
-        // 7.0+ zygote: the shim shows qemu's /dhd.owners descriptor under this whitelisted name; after fork
-        // zygote reopens it by that path, which has to lead back to the same table
         if (img.api >= 24) runCatching {
             val link = File(root, "system/framework/aemu-owners.jar")
             if (!isLink(link)) { link.delete(); Os.symlink(paths.owners.absolutePath, link.path) }
@@ -1665,35 +1508,10 @@ class TreeFixer(
         }
     }
 
-    private fun mainStackMaps() {
-        if (img.api < 23) return
-        val libc = File(root, "system/lib/libc.so")
-        runCatching {
-            val d = libc.readBytes()
-            val from = "/proc/self/task/%d/maps".toByteArray()
-            val i = indexOf(d, from)
-            if (i < 0) return
-            val to = "/proc/self/maps".toByteArray()
-            for (k in from.indices) d[i + k] = if (k < to.size) to[k] else 0
-            libc.writeBytes(d)
-            log("libc: main thread stack read from /proc/self/maps")
-        }.onFailure { log("libc maps patch failed: ${it.message}") }
-    }
-
-    private fun indexOf(d: ByteArray, p: ByteArray): Int {
-        var i = 0
-        while (i <= d.size - p.size) {
-            if (d[i] == p[0] && (1 until p.size).all { d[i + it] == p[it] }) return i
-            i++
-        }
-        return -1
-    }
-
     private fun isLink(f: File) = runCatching { OsConstants.S_ISLNK(Os.lstat(f.absolutePath).st_mode) }.getOrDefault(false)
     private fun wipe(f: File) = ImageStore.wipe(f)
 
     companion object {
-        private const val OPEN_GL = "engines/kk/libGLES_aemu.so"
         /** Мастера первого запуска: Samsung, Google, AOSP, MIUI, HTC, Sony */
         val SETUP_WIZARDS = listOf(
             "com.sec.android.app.SecSetupWizard", "com.google.android.setupwizard", "com.android.provision",
@@ -1710,13 +1528,6 @@ class TreeFixer(
         /** the entries of [SETUP_WIZARDS] that take over the screen at first boot (the AOSP provisioner finishes by itself) */
         val FIRST_RUN_WIZARDS = listOf("com.sec.android.app.SecSetupWizard", "com.google.android.setupwizard", "com.miui.provision",
             "com.htc.setupwizard", "com.sonyericsson.setupwizard", "com.sonymobile.setupwizard")
-        /** Прошивка MediaTek, где AudioFlinger связан с собственной звуковой библиотекой MTK (/dev/eac). */
-        fun isMtkAudio(root: File): Boolean {
-            if (File(root, "system/lib/libaudio.mtk.so").isFile) return true   // already swapped for our HAL
-            val f = File(root, "system/lib/libaudio.primary.default.so")
-            if (!f.isFile || f.length() > 20_000_000) return false
-            return runCatching { String(f.readBytes(), Charsets.ISO_8859_1).contains("AudioMTKHardware") }.getOrDefault(false)
-        }
 
         val QCOM_PARK = listOf(
             "system/etc/permissions/qti_permissions.xml",

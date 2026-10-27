@@ -1,97 +1,81 @@
 package app.aemu.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.Public
-import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeFlexibleTopAppBar
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import app.aemu.update.AppUpdateManager
-import app.aemu.update.ReleaseInfo
-import app.aemu.update.UpdateState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import app.aemu.AppPrefs
 import app.aemu.BuildConfig
 import app.aemu.R
+import app.aemu.update.AppUpdateManager
+import app.aemu.update.ReleaseInfo
+import app.aemu.update.UpdateState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
-/** Ссылки проекта — одни и те же в приложении, README и на сайте. */
 object Links {
-    const val SITE = "https://aemulator.gt.tc"
-    const val GITHUB = "https://github.com/uxazu/aemulator"
-    const val CHANNEL = "https://t.me/aemulatorofficial"
-    const val AUTHOR = "https://github.com/uxazu"
-    const val ORIGINAL = "https://t.me/istratii_tech1"
-    const val DONATE = "https://dalink.to/uxazu"
+    const val GITHUB = "https://github.com/Fiki-io/AEmulator"
+    const val AUTHOR = "https://github.com/Fiki-io"
+    const val GITHUB_DISPLAY = "github.com/Fiki-io/AEmulator"
+    const val AUTHOR_DISPLAY = "Fiki-io"
 }
 
 class AppSettingsActivity : ComponentActivity() {
@@ -103,17 +87,17 @@ class AppSettingsActivity : ComponentActivity() {
         setContent { AemuTheme { AppSettings(onBack = ::finish, onRestyle = ::restart) } }
     }
 
-    /** Язык применяется пересозданием активности для применения нового ContextWrapper с локалью. */
     private fun restart() {
         recreate()
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppSettings(onBack: () -> Unit, onRestyle: () -> Unit) {
     val ctx = LocalContext.current
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    var langDialog by remember { mutableStateOf(false) }
+    var langSheet by remember { mutableStateOf(false) }
+    var themeSheet by remember { mutableStateOf(false) }
     var defaults by remember { mutableStateOf(AppPrefs.defaults(ctx)) }
     var theme by remember { mutableStateOf(AppPrefs.theme(ctx)) }
     var dynamic by remember { mutableStateOf(AppPrefs.dynamicColor(ctx)) }
@@ -121,6 +105,9 @@ private fun AppSettings(onBack: () -> Unit, onRestyle: () -> Unit) {
     var autoUpdates by remember { mutableStateOf(AppPrefs.autoCheckUpdates(ctx)) }
     var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
     var downloadJob by remember { mutableStateOf<Job?>(null) }
+
+    val networkErrStr = stringResource(R.string.update_network_error)
+    val downloadErrStr = stringResource(R.string.update_download_error)
 
     fun checkForUpdates() {
         updateState = UpdateState.Checking
@@ -139,7 +126,7 @@ private fun AppSettings(onBack: () -> Unit, onRestyle: () -> Unit) {
                     }
                 },
                 onFailure = { err ->
-                    updateState = UpdateState.Error(err.localizedMessage ?: "Ошибка сети")
+                    updateState = UpdateState.Error(err.localizedMessage ?: networkErrStr)
                 }
             )
         }
@@ -156,141 +143,205 @@ private fun AppSettings(onBack: () -> Unit, onRestyle: () -> Unit) {
                 AppUpdateManager.installApk(ctx, file)
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
-                    updateState = UpdateState.Error(e.localizedMessage ?: "Ошибка загрузки")
+                    updateState = UpdateState.Error(e.localizedMessage ?: downloadErrStr)
                 }
             }
         }
     }
 
     fun open(url: String) = runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-    fun copy(text: String) {
-        (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("address", text))
-        Toast.makeText(ctx, ctx.getString(R.string.as_copied), Toast.LENGTH_SHORT).show()
-    }
+
     val langTag = AppPrefs.language(ctx)
-    val langName = AppPrefs.LANGUAGES.firstOrNull { it.first == langTag }?.second?.ifEmpty { null } ?: stringResource(R.string.as_lang_system)
+    val langName = AppPrefs.LANGUAGES.firstOrNull { it.first == langTag }?.second?.ifEmpty { null }
+        ?: stringResource(R.string.as_lang_system)
 
-    Scaffold(
-        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
-        topBar = {
-            LargeFlexibleTopAppBar(
-                title = { Text(stringResource(R.string.settings)) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back)) } },
-                scrollBehavior = scroll,
-            )
-        },
-    ) { pad ->
-        LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pad.calculateTopPadding() + 8.dp, bottom = pad.calculateBottomPadding() + 32.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item { AboutCard() }
+    val themeOptions = listOf(
+        AppPrefs.THEME_SYSTEM to stringResource(R.string.as_theme_system),
+        AppPrefs.THEME_LIGHT to stringResource(R.string.as_theme_light),
+        AppPrefs.THEME_DARK to stringResource(R.string.as_theme_dark),
+    )
+    val currentThemeName = themeOptions.firstOrNull { it.first == theme }?.second ?: stringResource(R.string.as_theme_dark)
 
-            item {
-                Section(stringResource(R.string.as_updates)) {
-                    Toggle(
-                        stringResource(R.string.as_auto_updates),
-                        stringResource(R.string.as_auto_updates_sub),
-                        autoUpdates
-                    ) {
-                        autoUpdates = it
-                        AppPrefs.setAutoCheckUpdates(ctx, it)
-                    }
-                    Row_(
-                        Icons.Rounded.SystemUpdate,
-                        stringResource(R.string.as_check_updates),
-                        stringResource(R.string.as_check_updates_sub, BuildConfig.VERSION_NAME)
-                    ) {
-                        checkForUpdates()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AemuTokens.ScreenGradient)
+    ) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = stringResource(R.string.settings),
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = stringResource(R.string.back),
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        scrolledContainerColor = Color.Transparent
+                    )
+                )
+            },
+        ) { pad ->
+            LazyColumn(
+                contentPadding = PaddingValues(
+                    start = AemuTokens.SpaceLg,
+                    end = AemuTokens.SpaceLg,
+                    top = pad.calculateTopPadding() + AemuTokens.SpaceSm,
+                    bottom = pad.calculateBottomPadding() + AemuTokens.SpaceXxl
+                ),
+                verticalArrangement = Arrangement.spacedBy(AemuTokens.SpaceXl),
+            ) {
+                item { AboutCard() }
+
+                item {
+                    SettingsGroup(title = stringResource(R.string.as_updates)) {
+                        Toggle(
+                            stringResource(R.string.as_auto_updates),
+                            stringResource(R.string.as_auto_updates_sub),
+                            autoUpdates
+                        ) {
+                            autoUpdates = it
+                            AppPrefs.setAutoCheckUpdates(ctx, it)
+                        }
+                        GroupDivider()
+                        NavRow(
+                            icon = Icons.Rounded.SystemUpdate,
+                            title = stringResource(R.string.as_check_updates),
+                            value = BuildConfig.VERSION_NAME
+                        ) {
+                            checkForUpdates()
+                        }
                     }
                 }
-            }
 
-            item {
-                Section(stringResource(R.string.as_appearance)) {
-                    Row_(Icons.Rounded.Translate, stringResource(R.string.as_language), langName) { langDialog = true }
-                    Text(stringResource(R.string.as_theme), style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp))
-                    val options = listOf(R.string.as_theme_system, R.string.as_theme_light, R.string.as_theme_dark)
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
-                        options.forEachIndexed { i, res ->
-                            ToggleButton(
-                                checked = theme == i,
-                                onCheckedChange = { if (theme != i) { theme = i; AppPrefs.setTheme(ctx, i) } },
-                                shapes = when (i) {
-                                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                                },
-                                modifier = Modifier.weight(1f).semantics { role = Role.RadioButton },
-                                contentPadding = PaddingValues(horizontal = 8.dp),
+                item {
+                    SettingsGroup(title = stringResource(R.string.as_appearance)) {
+                        NavRow(
+                            icon = Icons.Rounded.Translate,
+                            title = stringResource(R.string.as_language),
+                            value = langName
+                        ) {
+                            langSheet = true
+                        }
+                        GroupDivider()
+                        NavRow(
+                            icon = Icons.Rounded.Palette,
+                            title = stringResource(R.string.as_theme),
+                            value = currentThemeName
+                        ) {
+                            themeSheet = true
+                        }
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            GroupDivider()
+                            Toggle(
+                                stringResource(R.string.as_dynamic),
+                                stringResource(R.string.as_dynamic_sub),
+                                dynamic
                             ) {
-                                // одна строка: длинные названия («Системная») не переносятся по буквам
-                                Text(stringResource(res), maxLines = 1, softWrap = false,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                                dynamic = it
+                                AppPrefs.setDynamicColor(ctx, it)
                             }
                         }
                     }
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        Toggle(stringResource(R.string.as_dynamic), stringResource(R.string.as_dynamic_sub), dynamic) {
-                            dynamic = it; AppPrefs.setDynamicColor(ctx, it)
+                }
+
+                item {
+                    SettingsGroup(
+                        title = stringResource(R.string.as_defaults),
+                        subtitle = stringResource(R.string.as_defaults_sub)
+                    ) {
+                        fun set(s: app.aemu.core.VmSettings) {
+                            defaults = s
+                            AppPrefs.setDefaults(ctx, s)
+                        }
+                        Toggle(stringResource(R.string.vs_gpu), stringResource(R.string.vs_gpu_sub), defaults.gpu) {
+                            set(defaults.copy(gpu = it))
+                        }
+                        GroupDivider()
+                        Toggle(stringResource(R.string.vs_proxy), stringResource(R.string.vs_proxy_sub), defaults.netProxy) {
+                            set(defaults.copy(netProxy = it))
+                        }
+                        GroupDivider()
+                        Toggle(stringResource(R.string.vs_nav), stringResource(R.string.vs_nav_sub), defaults.showNavBar) {
+                            set(defaults.copy(showNavBar = it))
+                        }
+                        GroupDivider()
+                        Toggle(stringResource(R.string.vs_awake), stringResource(R.string.vs_awake_sub), defaults.keepScreenOn) {
+                            set(defaults.copy(keepScreenOn = it))
+                        }
+                        GroupDivider()
+                        Toggle(stringResource(R.string.as_led), stringResource(R.string.as_led_sub), defaults.showLed) {
+                            set(defaults.copy(showLed = it))
                         }
                     }
                 }
-            }
 
-            item {
-                Section(stringResource(R.string.as_defaults), stringResource(R.string.as_defaults_sub)) {
-                    fun set(s: app.aemu.core.VmSettings) { defaults = s; AppPrefs.setDefaults(ctx, s) }
-                    Toggle(stringResource(R.string.vs_gpu), stringResource(R.string.vs_gpu_sub), defaults.gpu) { set(defaults.copy(gpu = it)) }
-                    Toggle(stringResource(R.string.vs_jit), stringResource(R.string.vs_jit_sub), defaults.jit) { set(defaults.copy(jit = it)) }
-                    Toggle(stringResource(R.string.vs_proxy), stringResource(R.string.vs_proxy_sub), defaults.netProxy) { set(defaults.copy(netProxy = it)) }
-                    Toggle(stringResource(R.string.vs_nav), stringResource(R.string.vs_nav_sub), defaults.showNavBar) { set(defaults.copy(showNavBar = it)) }
-                    Toggle(stringResource(R.string.vs_awake), stringResource(R.string.vs_awake_sub), defaults.keepScreenOn) { set(defaults.copy(keepScreenOn = it)) }
-                    Toggle(stringResource(R.string.as_led), stringResource(R.string.as_led_sub), defaults.showLed) { set(defaults.copy(showLed = it)) }
-                }
-            }
-
-            item {
-                Section(stringResource(R.string.as_links)) {
-                    Row_(Icons.Rounded.Public, stringResource(R.string.as_site), "aemulator.gt.tc") { open(Links.SITE) }
-                    Row_(Icons.Rounded.Send, stringResource(R.string.as_channel), "@aemulatorofficial") { open(Links.CHANNEL) }
-                    Row_(Icons.Rounded.Person, stringResource(R.string.as_author), "uxazu") { open(Links.AUTHOR) }
-                    Row_(Icons.Rounded.History, stringResource(R.string.as_orig), "t.me/istratii_tech1") { open(Links.ORIGINAL) }
-                    Row_(Icons.Rounded.Code, stringResource(R.string.as_github), "github.com/uxazu/aemulator") { open(Links.GITHUB) }
-                }
-            }
-
-            item {
-                Section(stringResource(R.string.as_support)) {
-                    Row_(Icons.Rounded.Favorite, stringResource(R.string.as_donate), "dalink.to/uxazu") { open(Links.DONATE) }
+                item {
+                    SettingsGroup(title = stringResource(R.string.as_links)) {
+                        NavRow(
+                            icon = Icons.Rounded.Person,
+                            title = stringResource(R.string.as_author),
+                            value = Links.AUTHOR_DISPLAY
+                        ) {
+                            open(Links.AUTHOR)
+                        }
+                        GroupDivider()
+                        NavRow(
+                            icon = Icons.Rounded.Code,
+                            title = stringResource(R.string.as_github),
+                            value = Links.GITHUB_DISPLAY
+                        ) {
+                            open(Links.GITHUB)
+                        }
+                    }
                 }
             }
         }
     }
 
-    if (langDialog) {
-        AlertDialog(
-            onDismissRequest = { langDialog = false },
-            icon = { Icon(Icons.Rounded.Language, null) },
-            title = { Text(stringResource(R.string.as_language)) },
-            text = {
-                LazyColumn {
-                    items(AppPrefs.LANGUAGES) { (tag, name) ->
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {
-                                langDialog = false
-                                if (tag != langTag) { AppPrefs.setLanguage(ctx, tag); onRestyle() }
-                            }.padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = tag == langTag, onClick = null, modifier = Modifier.padding(horizontal = 12.dp))
-                            Text(name.ifEmpty { stringResource(R.string.as_lang_system) }, style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
+    if (langSheet) {
+        SingleChoiceBottomSheet(
+            title = stringResource(R.string.as_language),
+            options = AppPrefs.LANGUAGES.map { (tag, name) ->
+                tag to name.ifEmpty { stringResource(R.string.as_lang_system) }
+            },
+            selectedKey = langTag,
+            onSelect = { tag ->
+                langSheet = false
+                if (tag != langTag) {
+                    AppPrefs.setLanguage(ctx, tag)
+                    onRestyle()
                 }
             },
-            confirmButton = { TextButton(onClick = { langDialog = false }) { Text(stringResource(R.string.cancel)) } },
+            onDismiss = { langSheet = false }
+        )
+    }
+
+    if (themeSheet) {
+        SingleChoiceBottomSheet(
+            title = stringResource(R.string.as_theme),
+            options = themeOptions,
+            selectedKey = theme,
+            onSelect = { selected ->
+                themeSheet = false
+                if (selected != theme) {
+                    theme = selected
+                    AppPrefs.setTheme(ctx, selected)
+                }
+            },
+            onDismiss = { themeSheet = false }
         )
     }
 
@@ -307,45 +358,179 @@ private fun AppSettings(onBack: () -> Unit, onRestyle: () -> Unit) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AboutCard() {
-    Card(shape = MaterialTheme.shapes.extraLarge, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.drawable.logo), null, Modifier.size(64.dp).clip(RoundedCornerShape(20.dp)))
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text("AEmulator", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                Text(stringResource(R.string.as_version, BuildConfig.VERSION_NAME), style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer)
-                Spacer(Modifier.height(4.dp))
-                Text(stringResource(R.string.as_about), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+private fun <T> SingleChoiceBottomSheet(
+    title: String,
+    options: List<Pair<T, String>>,
+    selectedKey: T,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        shape = AemuTokens.ShapeSheet,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        scrimColor = AemuTokens.ScrimDark,
+        dragHandle = null
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(AemuTokens.SheetTopGlow)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = AemuTokens.SpaceXl)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AemuTokens.SpaceXl, vertical = AemuTokens.SpaceLg)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(AemuTokens.NavBarCompactSize)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = stringResource(R.string.close),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                LazyColumn {
+                    itemsIndexed(options) { idx, (key, label) ->
+                        if (idx > 0) GroupDivider()
+                        val selected = key == selectedKey
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(AemuTokens.RowHeight)
+                                .clickable { onSelect(key) }
+                                .padding(horizontal = AemuTokens.SpaceXl),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(AemuTokens.IconMd)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun Section(title: String, subtitle: String? = null, content: @Composable () -> Unit) {
-    Column {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 8.dp, bottom = if (subtitle == null) 8.dp else 0.dp))
-        subtitle?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
-        }
-        Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-            Column(Modifier.padding(vertical = 8.dp)) { content() }
+private fun AboutCard() {
+    Surface(
+        shape = AemuTokens.ShapeCard,
+        color = AemuTokens.SurfaceCardTranslucent,
+        border = AemuTokens.CardBorder,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(AemuTokens.SpaceXl),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                painter = painterResource(R.drawable.logo),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(AemuTokens.LogoSize)
+                    .clip(AemuTokens.ShapeCover)
+            )
+            Spacer(Modifier.width(AemuTokens.SpaceLg))
+            Column(Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AemuTokens.SpaceSm)
+                ) {
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = stringResource(R.string.as_version, BuildConfig.VERSION_NAME),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(AemuTokens.SpaceXs))
+                Text(
+                    text = stringResource(R.string.as_about),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun Row_(icon: ImageVector, title: String, sub: String, mono: Boolean = false, onClick: () -> Unit) {
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { Text(sub, fontFamily = if (mono) FontFamily.Monospace else null, maxLines = 2) },
-        leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-    )
+private fun NavRow(icon: ImageVector, title: String, value: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(AemuTokens.RowHeight)
+            .clickable(onClick = onClick)
+            .padding(horizontal = AemuTokens.SpaceLg),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AemuTokens.SpaceLg)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(AemuTokens.IconLg)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(AemuTokens.IconMd)
+        )
+    }
 }

@@ -60,7 +60,7 @@ class LibraryModel(app: Application) : AndroidViewModel(app) {
                 // умолчания из настроек приложения поверх того, что подобрал анализатор (экран, частоты)
                 val raw = imp.import(uri, name)
                 val d = app.aemu.AppPrefs.defaults(ctx)
-                val img = raw.copy(settings = raw.settings.copy(gpu = d.gpu, jit = d.jit, netProxy = d.netProxy,
+                val img = raw.copy(settings = raw.settings.copy(gpu = d.gpu, netProxy = d.netProxy,
                     showNavBar = d.showNavBar, keepScreenOn = d.keepScreenOn, showLed = d.showLed))
                 if (img != raw) ImageStore.save(ctx, img)
                 _import.value = _import.value.copy(active = false, done = img, step = "Done", progress = 1f)

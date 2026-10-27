@@ -177,8 +177,8 @@ class VmActivity : ComponentActivity() {
             return
         }
         vm = if (cur != null && cur.img.id == img.id) cur
-            else GuestVm(applicationContext, img).also { it.recoveryMode = intent.getBooleanExtra(EXTRA_RECOVERY, false); VmHost.vm = it }
-        vm.onPower = { reboot, reason -> runOnUiThread { if (reboot) rebootVm(reason == "recovery") else stopVm() } }
+            else GuestVm(applicationContext, img).also { VmHost.vm = it }
+        vm.onPower = { reboot, _ -> runOnUiThread { if (reboot) rebootVm() else stopVm() } }
         val s = vm.settings
         showLed = s.showLed
         if (s.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -642,18 +642,17 @@ class VmActivity : ComponentActivity() {
             }) { Text(stringResource(R.string.m_reset)) } })
     }
 
-    private fun rebootVm(recovery: Boolean = false) {
+    private fun rebootVm() {
         val id = vm.img.id
         thread {
             vm.stop()
             VmHost.vm = null
-            // the GL bridge cannot come up twice in one process, so a reboot restarts the :vm process
-            runOnUiThread { restartProcess(id, recovery) }
+            runOnUiThread { restartProcess(id) }
         }
     }
 
-    private fun restartProcess(id: String, recovery: Boolean = false) {
-        val i = Intent(this, VmActivity::class.java).putExtra(EXTRA_ID, id).putExtra(EXTRA_RECOVERY, recovery)
+    private fun restartProcess(id: String) {
+        val i = Intent(this, VmActivity::class.java).putExtra(EXTRA_ID, id)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val pi = android.app.PendingIntent.getActivity(this, 1, i, android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_CANCEL_CURRENT)
         (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 400, pi)
@@ -669,15 +668,12 @@ class VmActivity : ComponentActivity() {
         var showTerm by remember { mutableStateOf(false) }
         var menu by remember { mutableStateOf(false) }
         var dialog by remember { mutableStateOf(Dlg.NONE) }
-        // recovery is "running" too, but has no Android behind am/pm/settings
-        val running = state == GuestVm.State.RUNNING && !vm.recoveryMode
+        val running = state == GuestVm.State.RUNNING
         var seconds by remember { mutableStateOf(0L) }
         var frames by remember { mutableStateOf(0L) }
         LaunchedEffect(Unit) { while (true) { guest.format = 1; seconds = vm.bootSeconds(); frames = app.aemu.core.GlHost.presented().takeIf { it > 0 } ?: guest.rings; delay(500) } }
-        // как только гость начал рисовать — карточку убираем, остаётся маленький индикатор
         val drawing = frames > 30
         androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-            // the menu button stays on screen: 40 dp button + 8 dp padding, anchored at the top end
             val keep = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
             val maxX = (constraints.maxWidth - keep).coerceAtLeast(0f)
             val maxY = (constraints.maxHeight - keep * 2).coerceAtLeast(0f)
@@ -685,50 +681,53 @@ class VmActivity : ComponentActivity() {
             fun clamp(o: Offset) = Offset(if (rtl) o.x.coerceIn(0f, maxX) else o.x.coerceIn(-maxX, 0f), o.y.coerceIn(0f, maxY))
             LaunchedEffect(maxX, maxY) { menuOffset = clamp(menuOffset) }
             led?.takeIf { it.lit && showLed }?.let { LedIndicator(it, Modifier.align(Alignment.TopCenter)) }
-            // карточка загрузки
             AnimatedVisibility(
                 visible = state != GuestVm.State.RUNNING && !showLog && !(drawing && state == GuestVm.State.BOOTING),
-                enter = fadeIn(), exit = fadeOut(),
+                enter = fadeIn(AemuTokens.tweenStandard()), exit = fadeOut(AemuTokens.tweenFast()),
                 modifier = Modifier.align(Alignment.Center),
             ) { BootCard(seconds) }
 
             if (drawing && state == GuestVm.State.BOOTING && !showLog && vm.screenUpAt == 0L) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
-                    modifier = Modifier.align(Alignment.TopStart).displayCutoutPadding().statusBarsPadding().padding(8.dp)) {
-                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        LoadingIndicator(Modifier.size(24.dp))
-                        Spacer(Modifier.width(6.dp))
+                    border = AemuTokens.CardBorder,
+                    modifier = Modifier.align(Alignment.TopStart).displayCutoutPadding().statusBarsPadding().padding(AemuTokens.SpaceSm)) {
+                    Row(Modifier.padding(horizontal = AemuTokens.SpaceMd, vertical = AemuTokens.SpaceXs), verticalAlignment = Alignment.CenterVertically) {
+                        LoadingIndicator(Modifier.size(AemuTokens.IconLg))
+                        Spacer(Modifier.width(AemuTokens.SpaceSm))
                         Text(stringResource(R.string.vm_booting_short, seconds.toInt()), style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
 
-            // журнал
-            AnimatedVisibility(visible = showLog, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            AnimatedVisibility(visible = showLog, enter = fadeIn(AemuTokens.tweenStandard()), exit = fadeOut(AemuTokens.tweenFast()), modifier = Modifier.fillMaxSize()) {
                 LogPanel(onClose = { showLog = false })
             }
-            AnimatedVisibility(visible = showTerm, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            AnimatedVisibility(visible = showTerm, enter = fadeIn(AemuTokens.tweenStandard()), exit = fadeOut(AemuTokens.tweenFast()), modifier = Modifier.fillMaxSize()) {
                 TerminalPanel(onClose = { showTerm = false })
             }
 
-            // top menu button (hidden while the log is open so it does not cover the log toolbar); drag to move it
-            if (!showLog && !showTerm) Box(Modifier.align(Alignment.TopEnd).displayCutoutPadding().statusBarsPadding().padding(8.dp)
+            if (!showLog && !showTerm) Box(Modifier.align(Alignment.TopEnd).displayCutoutPadding().statusBarsPadding().padding(AemuTokens.SpaceSm)
                 .offset { IntOffset(menuOffset.x.roundToInt(), menuOffset.y.roundToInt()) }
                 .pointerInput(Unit) {
                     detectDragGestures(onDragEnd = { saveMenuOffset() }) { ch, d -> ch.consume(); menuOffset = clamp(menuOffset + d) }
                 }) {
-                FilledTonalIconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) {
+                FilledTonalIconButton(onClick = { menu = true }, modifier = Modifier.size(AemuTokens.TouchMin)) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.menu))
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenu(
+                    expanded = menu,
+                    onDismissRequest = { menu = false },
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = AemuTokens.ShapeCover,
+                    border = AemuTokens.CardBorder
+                ) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.log)) }, leadingIcon = { Icon(Icons.Rounded.Terminal, null) },
                         onClick = { menu = false; showLog = true })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_terminal)) }, leadingIcon = { Icon(Icons.Rounded.Code, null) },
                         enabled = running, onClick = { menu = false; showTerm = true })
-                    // the machine keeps running behind its notification
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_minimize)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
                         onClick = { menu = false; moveTaskToBack(true) })
-                    HorizontalDivider()
+                    HorizontalDivider(color = AemuTokens.DividerSubtle)
                     DropdownMenuItem(text = { Text(stringResource(R.string.vol_up)) }, leadingIcon = { Icon(Icons.Rounded.VolumeUp, null) },
                         onClick = { vm.input.press(InputService.KEY_VOLUMEUP) })
                     DropdownMenuItem(text = { Text(stringResource(R.string.vol_down)) }, leadingIcon = { Icon(Icons.Rounded.VolumeDown, null) },
@@ -737,33 +736,28 @@ class VmActivity : ComponentActivity() {
                         onClick = { menu = false; vm.input.press(InputService.KEY_POWER) })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_power_menu)) }, leadingIcon = { Icon(Icons.Rounded.PowerSettingsNew, null) },
                         onClick = { menu = false; vm.input.press(InputService.KEY_POWER, 1500) })
-                    // long-press Menu makes 2.x–4.x call InputMethodManager.toggleSoftInput: the firmware's own keyboard
-                    if (!vm.recoveryMode) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_keyboard)) }, leadingIcon = { Icon(Icons.Rounded.Keyboard, null) },
-                            enabled = running, onClick = {
-                                menu = false
-                                // 5.0+ hides the soft keyboard while it sees hardware keys and has no long-Menu toggle
-                                if (vm.img.api >= 21) guestAsync("settings put secure show_ime_with_hard_keyboard 1")
-                                else vm.input.press(InputService.KEY_MENU, 1000)
-                            })
-                        HorizontalDivider()
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_paste)) }, leadingIcon = { Icon(Icons.Rounded.ContentPaste, null) },
-                            enabled = running, onClick = { menu = false; pasteToGuest() })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_sms)) }, leadingIcon = { Icon(Icons.Rounded.Sms, null) },
-                            enabled = running, onClick = { menu = false; dialog = Dlg.SMS })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_call)) }, leadingIcon = { Icon(Icons.Rounded.Call, null) },
-                            enabled = running, onClick = { menu = false; dialog = Dlg.CALL })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_battery)) }, leadingIcon = { Icon(Icons.Rounded.BatteryStd, null) },
-                            enabled = running, onClick = { menu = false; dialog = Dlg.BATTERY })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_install_apk)) }, leadingIcon = { Icon(Icons.Rounded.InstallMobile, null) },
-                            enabled = running, onClick = { menu = false; pickApk.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*")) })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_device)) }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
-                            enabled = running, onClick = { menu = false; dialog = Dlg.DEVICE })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_adb)) }, leadingIcon = { Icon(Icons.Rounded.Lan, null) },
-                            enabled = running, onClick = { menu = false; dialog = Dlg.ADB })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.m_settings)) }, leadingIcon = { Icon(Icons.Rounded.Settings, null) },
-                            enabled = running, onClick = { menu = false; guestAsync("am start -a android.settings.SETTINGS") })
-                    }
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_keyboard)) }, leadingIcon = { Icon(Icons.Rounded.Keyboard, null) },
+                        enabled = running, onClick = {
+                            menu = false
+                            guestAsync("settings put secure show_ime_with_hard_keyboard 1")
+                        })
+                    HorizontalDivider(color = AemuTokens.DividerSubtle)
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_paste)) }, leadingIcon = { Icon(Icons.Rounded.ContentPaste, null) },
+                        enabled = running, onClick = { menu = false; pasteToGuest() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_sms)) }, leadingIcon = { Icon(Icons.Rounded.Sms, null) },
+                        enabled = running, onClick = { menu = false; dialog = Dlg.SMS })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_call)) }, leadingIcon = { Icon(Icons.Rounded.Call, null) },
+                        enabled = running, onClick = { menu = false; dialog = Dlg.CALL })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_battery)) }, leadingIcon = { Icon(Icons.Rounded.BatteryStd, null) },
+                        enabled = running, onClick = { menu = false; dialog = Dlg.BATTERY })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_install_apk)) }, leadingIcon = { Icon(Icons.Rounded.InstallMobile, null) },
+                        enabled = running, onClick = { menu = false; pickApk.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*")) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_device)) }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                        enabled = running, onClick = { menu = false; dialog = Dlg.DEVICE })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_adb)) }, leadingIcon = { Icon(Icons.Rounded.Lan, null) },
+                        enabled = running, onClick = { menu = false; dialog = Dlg.ADB })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.m_settings)) }, leadingIcon = { Icon(Icons.Rounded.Settings, null) },
+                        enabled = running, onClick = { menu = false; guestAsync("am start -a android.settings.SETTINGS") })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_screenshot)) }, leadingIcon = { Icon(Icons.Rounded.Screenshot, null) },
                         enabled = state == GuestVm.State.RUNNING, onClick = { menu = false; screenshot() })
                     DropdownMenuItem(text = { Text(stringResource(if (recOn.value) R.string.m_record_stop else R.string.m_record)) },
@@ -774,13 +768,9 @@ class VmActivity : ComponentActivity() {
                         onClick = { menu = false; toggleVnc() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_reset_menu_pos)) }, leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         onClick = { menu = false; menuOffset = Offset.Zero; saveMenuOffset() })
-                    HorizontalDivider()
+                    HorizontalDivider(color = AemuTokens.DividerSubtle)
                     DropdownMenuItem(text = { Text(stringResource(R.string.m_reboot)) }, leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
                         onClick = { menu = false; rebootVm() })
-                    DropdownMenuItem(text = { Text(stringResource(if (vm.recoveryMode) R.string.m_reboot_system else R.string.m_reboot_recovery)) },
-                        leadingIcon = { Icon(Icons.Rounded.RestartAlt, null) },
-                        enabled = vm.recoveryMode || app.aemu.core.RecoveryImage.installed(vm.paths),
-                        onClick = { menu = false; rebootVm(!vm.recoveryMode) })
                     DropdownMenuItem(text = { Text(stringResource(R.string.shutdown)) }, leadingIcon = { Icon(Icons.Rounded.Close, null) },
                         onClick = { menu = false; stopVm() })
                 }
@@ -1094,9 +1084,8 @@ class VmActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_ID = "id"
-        const val EXTRA_RECOVERY = "recovery"
-        fun start(ctx: Context, id: String, recovery: Boolean = false) {
-            ctx.startActivity(Intent(ctx, VmActivity::class.java).putExtra(EXTRA_ID, id).putExtra(EXTRA_RECOVERY, recovery)
+        fun start(ctx: Context, id: String) {
+            ctx.startActivity(Intent(ctx, VmActivity::class.java).putExtra(EXTRA_ID, id)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }

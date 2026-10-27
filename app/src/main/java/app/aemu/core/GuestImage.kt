@@ -10,17 +10,15 @@ data class VmSettings(
     val density: Int = 240,
     /** аппаратная отрисовка через GPU телефона (иначе программный растеризатор прошивки) */
     val gpu: Boolean = true,
-    /** hwui в гостевых приложениях (4.x) */
+    /** hwui in guest apps */
     val hwui: Boolean = true,
-    /** JIT Dalvik; без него стабильнее, но медленнее */
-    val jit: Boolean = true,
-    /** ART (5.0+): compile apps fully to machine code at install/first boot; off = interpret-only, fast first boot */
+    /** ART: compile apps fully to machine code at install/first boot; off = interpret-only, fast first boot */
     val fullDexopt: Boolean = false,
-    /** частота развёртки гостя, Гц */
+    /** guest refresh rate, Hz */
     val fbHz: Int = 60,
-    /** касаний в секунду, которые шлём гостю */
+    /** touch events per second sent to guest */
     val touchHz: Int = 60,
-    /** HTTP/HTTPS-прокси с современным TLS для старых браузеров */
+    /** HTTP/HTTPS proxy with modern TLS */
     val netProxy: Boolean = true,
     val lowRam: Boolean = false,
     val showFrame: Boolean = false,
@@ -33,26 +31,20 @@ data class VmSettings(
     /** the guest phone's notification LED drawn above its screen */
     val showLed: Boolean = true,
     val mtMode: Int = 0,
-    /** старый движок для 2.x (GL через pbuffer, только GLES 1.x) — запасной вариант */
-    val legacyEngine: Boolean = false,
     /** guest RAM budget in MB, 0 = automatic */
     val ramMb: Int = 0,
     /** emulate the radio (RIL); off = tablet-like firmware without telephony */
     val radio: Boolean = true,
-    /** hardware 32-bit (AArch32 EL0) bypass without translator on supported CPUs */
-    val native32: Boolean = false,
     /** IMEI reported by the fake modem; blank = default sample IMEI */
     val imei: String = "",
-    /** extra qemu options; KEY=VALUE tokens are passed as environment variables */
-    val qemuArgs: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("width", width).put("height", height).put("density", density)
-        .put("gpu", gpu).put("hwui", hwui).put("jit", jit).put("fullDexopt", fullDexopt).put("fbHz", fbHz)
+        .put("gpu", gpu).put("hwui", hwui).put("fullDexopt", fullDexopt).put("fbHz", fbHz)
         .put("touchHz", touchHz).put("netProxy", netProxy).put("lowRam", lowRam)
         .put("showFrame", showFrame).put("showNavBar", showNavBar).put("navKeys", navKeys).put("navSize", navSize)
-        .put("keepScreenOn", keepScreenOn).put("showLed", showLed).put("mtMode", mtMode).put("legacyEngine", legacyEngine)
-        .put("ramMb", ramMb).put("radio", radio).put("native32", native32).put("imei", imei).put("qemuArgs", qemuArgs)
+        .put("keepScreenOn", keepScreenOn).put("showLed", showLed).put("mtMode", mtMode)
+        .put("ramMb", ramMb).put("radio", radio).put("imei", imei)
 
     companion object {
         const val NAV_DEFAULT = "back,home,recents,menu"
@@ -78,7 +70,6 @@ data class VmSettings(
                 density = o.optInt("density", d.density),
                 gpu = o.optBoolean("gpu", d.gpu),
                 hwui = o.optBoolean("hwui", d.hwui),
-                jit = o.optBoolean("jit", d.jit),
                 fullDexopt = o.optBoolean("fullDexopt", d.fullDexopt),
                 fbHz = o.optInt("fbHz", d.fbHz),
                 touchHz = o.optInt("touchHz", d.touchHz),
@@ -91,12 +82,9 @@ data class VmSettings(
                 keepScreenOn = o.optBoolean("keepScreenOn", d.keepScreenOn),
                 showLed = o.optBoolean("showLed", d.showLed),
                 mtMode = o.optInt("mtMode", d.mtMode),
-                legacyEngine = o.optBoolean("legacyEngine", false),
                 ramMb = o.optInt("ramMb", 0),
                 radio = o.optBoolean("radio", true),
-                native32 = o.optBoolean("native32", false),
                 imei = o.optString("imei", ""),
-                qemuArgs = o.optString("qemuArgs", ""),
             )
         }
     }
@@ -217,12 +205,12 @@ data class GuestImage(
                 id = o.getString("id"),
                 name = o.optString("name", "Android"),
                 release = o.optString("release", "?"),
-                api = o.optInt("api", 19),
+                api = o.optInt("api", 28),
                 brand = o.optString("brand", ""),
                 model = o.optString("model", ""),
                 skin = o.optString("skin", "AOSP"),
                 engine = Engine.byId(o.optString("engine")),
-                abi = o.optString("abi", "armeabi-v7a"),
+                abi = o.optString("abi", "arm64-v8a"),
                 bootclasspath = o.optString("bootclasspath", ""),
                 exports = exports,
                 dirs = dirs,
@@ -233,7 +221,7 @@ data class GuestImage(
                 createdAt = o.optLong("createdAt", 0),
                 sizeBytes = o.optLong("sizeBytes", 0),
                 sourceName = o.optString("sourceName", ""),
-                runtime = o.optString("runtime", "dalvik"),
+                runtime = o.optString("runtime", "art"),
                 warnings = warn,
                 lastBootMs = o.optLong("lastBootMs", 0),
                 bootCount = o.optInt("bootCount", 0),

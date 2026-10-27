@@ -36,8 +36,8 @@ sealed interface UpdateState {
 }
 
 object AppUpdateManager {
-    private const val RELEASES_API = "https://api.github.com/repos/uxazu/AEmulator/releases"
-    private const val GITHUB_REPO_URL = "https://github.com/uxazu/AEmulator"
+    const val RELEASES_API = "https://api.github.com/repos/Fiki-io/AEmulator/releases"
+    const val GITHUB_REPO_URL = "https://github.com/Fiki-io/AEmulator/releases"
 
     /**
      * Запрос к GitHub API для получения информации о последнем релизе с APK-файлом.

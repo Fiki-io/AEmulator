@@ -91,9 +91,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
     /** ADB over the LAN, switched on from the VM menu */
     val adb = AdbServer(this)
     val input = InputService(paths, ::log)
-    // 2.x пишет в /dev/eac через AudioHardwareGeneric на 44,1 кГц, HAL 4.x движка — на 48 кГц
-    val audio = AudioOut(paths, ::log, if (img.api < 14) 44100 else AudioOut.RATE,
-        if (TreeFixer.isMtkAudio(paths.root)) "dev/aemu_pcm" else "dev/eac")
+    val audio = AudioOut(paths, ::log, AudioOut.RATE, "dev/eac")
     val ril = RilStub(paths, ::log, img.settings.imei.ifBlank { VmSettings.DEFAULT_IMEI }, img.api)
     val vold = VoldStub(paths, img.sdcardPath, ::log, others = img.volumes, api = img.api)
     var onFrame: (() -> Unit)? = null
@@ -127,102 +125,12 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         failure = null
         setState(State.PREPARING)
         try {
-            if (recoveryMode) doRecovery() else doBoot()
+            doBoot()
         } catch (t: Throwable) {
             failure = t.message ?: t.toString()
-            log("✖ boot aborted: $failure")
+            log("boot aborted: $failure")
             setState(State.FAILED)
         }
-    }
-
-    /** Boot the firmware's recovery (RecoveryImage) instead of Android. */
-    @Volatile var recoveryMode = false
-    /** recovery framebuffer format for the screen view: 0 RGB565, 1 RGBA/RGBX_8888, 2 BGRA_8888 */
-    @Volatile var recoveryFormat = 0
-
-    private fun doRecovery() {
-        paths.bin.mkdirs()
-        runCatching { logFile.writeText("") }
-        log("image \"${img.name}\": recovery mode")
-        if (!RecoveryImage.installed(paths)) error("this firmware has no recovery installed")
-        val runner = paths.nativeBin(kernel.runner)
-        if (!runner.canExecute()) error("native runner ${kernel.runner} is not executable")
-        killLeftovers()
-        HostNative.limitStackSafe()
-        TreeFixer(ctx, paths, img, ::log).fixup()   // framebuffer, input node
-        val sd = Sdcard.setup(ctx, paths, img, ::log)
-        RecoveryImage.prepare(paths, sd, settings)
-        input.rateHz = settings.touchHz
-        input.mtMode = settings.mtMode
-        input.serve()
-        // recovery's minui opens /dev/input/event* through openat():
-        // a FIFO there gets the raw input_event stream straight from InputService
-        runCatching {
-            val ev = File(RecoveryImage.dir(paths), "dev/input/event0")
-            ev.delete()
-            android.system.Os.mkfifo(ev.path, "666".toInt(8))
-            val fd = android.system.Os.open(ev.path, android.system.OsConstants.O_RDWR, 0)
-            input.sink = java.io.FileOutputStream(fd)
-            for (alt in listOf("event1", "event2", "event3")) {
-                val f = File(RecoveryImage.dir(paths), "dev/input/$alt")
-                f.delete()
-                runCatching { android.system.Os.symlink(ev.path, f.path) }
-            }
-        }.onFailure { log("recovery: no input channel: ${it.message}") }
-        val (w, h) = runCatching { File(paths.root, "dhd.fbgeom").readText().trim().split(Regex("\\s+")).map { it.toInt() } }
-            .getOrNull()?.takeIf { it.size >= 2 }?.let { it[0] to it[1] } ?: (settings.width to settings.height)
-        val r = RecoveryImage.dir(paths)
-        runCatching { File(r, "tmp/recovery.log").delete() }
-        // debugging: run/recovery.strace traces the guest's system calls into run/recovery.trace
-        val trace = if (File(paths.bin, "recovery.strace").exists()) listOf("-strace", "-D", File(paths.bin, "recovery.trace").absolutePath) else emptyList()
-        val cmd = listOf(runner.absolutePath, "/sbin/recovery", File(r, "sbin/recovery").absolutePath)
-        val pb = ProcessBuilder(cmd)
-            .directory(r).redirectErrorStream(true).redirectOutput(File(paths.bin, "recovery.out"))
-        pb.environment().clear()
-        pb.environment().putAll(mapOf(
-            "PATH" to "/sbin:/system/bin", "LD_LIBRARY_PATH" to ".:/sbin", "ANDROID_ROOT" to "/system", "ANDROID_DATA" to "/data",
-            "EXTERNAL_STORAGE" to "/sdcard", "TZ" to "UTC",
-            "LD_PRELOAD" to "/sbin/librecshim.so:/sbin/libaemushim.so", "AEMU_MOUNTS" to "/sdcard:/data:/system:/cache:/emmc:/external_sd:/usb-otg",
-            "DHD_FB_W" to "$w", "DHD_FB_H" to "$h", "DHD_IN_W" to "$w", "DHD_IN_H" to "$h",
-            "DHD_INPUT" to paths.inputSock.absolutePath,
-        ))
-        bootAt = System.currentTimeMillis()
-        val p = pb.start()
-        synchronized(procs) { procs["recovery"] = p }
-        setState(State.RUNNING)
-        log("recovery started (${w}x$h)")
-        // pixel format the recovery draws in, from its own log ("Pixel format: BGRA_8888", TWRP)
-        Thread {
-            val rlog = File(r, "tmp/recovery.log")
-            repeat(40) {
-                if (!p.isAlive || stopping) return@Thread
-                val t = runCatching { rlog.readText() }.getOrDefault("")
-                val fmt = Regex("Pixel format: (BGRA_8888|RGBX_8888|RGBA_8888|RGB_565)").findAll(t).lastOrNull()?.groupValues?.get(1)
-                if (fmt != null) {
-                    recoveryFormat = when (fmt) { "BGRA_8888" -> 2; "RGB_565" -> 0; else -> 1 }
-                    log("recovery draws $fmt")
-                    return@Thread
-                }
-                Thread.sleep(250)
-            }
-        }.start()
-        // reboot requests of the recovery (librecshim → /dev/aemu_power)
-        val power = File(r, "dev/aemu_power")
-        Thread {
-            while (p.isAlive && !stopping) {
-                if (power.length() > 0) {
-                    val v = runCatching { power.readText().trim() }.getOrDefault("reboot"); power.writeText("")
-                    powerRequest(v); break
-                }
-                Thread.sleep(500)
-            }
-        }.start()
-        Thread {
-            val code = runCatching { p.waitFor() }.getOrDefault(-1)
-            if (stopping || powerHandled) return@Thread
-            log("recovery exited (code $code), booting the system")
-            onPower?.invoke(true, "")
-        }.start()
     }
 
     private fun doBoot() {
@@ -232,11 +140,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         if (!File(paths.root, "system/framework").isDirectory) error("firmware tree missing")
         val runner = paths.nativeBin(kernel.runner)
         if (!runner.canExecute()) error("native runner ${runner.name} is not executable")
-        log("· kernel ${kernel.tag} (${kernel.runner})")
-        // the guest's SwiftShader (legacy, reads SwiftShader.ini from the process's directory, this one) finds one core
-        // on Android and draws every frame in a single thread: MIUI 8 at 1080×1920 flipped pages at 19 fps, 59 with 8.
-        // Every N64 kernel ships that build (n64-gl), and the guest's services and apps all run in this directory
-        // (run/SwiftShader.off: the old single thread, to compare)
+        log("kernel ${kernel.tag} (${kernel.runner})")
         if (engine == Engine.N64) runCatching {
             if (File(paths.bin, "SwiftShader.off").exists()) File(paths.bin, "SwiftShader.ini").delete()
             else File(paths.bin, "SwiftShader.ini").writeText("[Processor]\nThreadCount=${Runtime.getRuntime().availableProcessors().coerceIn(1, 8)}\n")
@@ -247,8 +151,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         // 1. дерево
         val fixer = TreeFixer(ctx, paths, img, ::log)
         fixer.fixup()
-        // политика звука уже подменялась раньше — обновить её файлы (обёртка/AOSP) до текущей версии
-        if (File(paths.root, "system/.aemu-parked/system#lib#hw#audio_policy.default.so").isFile) swapAudioPolicy()
         GuestLog.clear(paths.root)
         val sd = Sdcard.setup(ctx, paths, img, ::log)
 
@@ -292,7 +194,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         overrides["ro.product.cpu.abilist"] = "arm64-v8a"
         overrides["ro.product.cpu.abilist64"] = "arm64-v8a"
         overrides["ro.product.cpu.abilist32"] = ""
-        overrides["dalvik.vm.execution-mode"] = if (s.jit) "int:jit" else "int:fast"
         if (s.lowRam || s.ramMb in 1..768) overrides["ro.config.low_ram"] = "true"
         if (s.ramMb > 0) {
             // Dalvik heap sized from the guest RAM budget (like a real device of that class)
@@ -342,14 +243,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                 overrides["dalvik.vm.dex2oat-flags"] = overrides["dalvik.vm.dex2oat-flags"] + " --runtime-arg -Xnorelocate"
             }
         }
-        // порты MIUI правят framework на smali так, что Dalvik-верификатор отвергает классы ядра
-        // (зигота падает на VerifyError) — на телефонах они живут с выключенной проверкой байткода
-        if (img.skin.contains("MIUI", true) && img.runtime == "dalvik") overrides["dalvik.vm.dexopt-flags"] = "v=n,o=a,m=y"
-        // Dalvik's first boot runs dexopt over every apk without an odex, one after another and translated (S III: 88
-        // apps, 104 s), and verification is most of it; like ART's verify-none above, unless "full compilation" is on
-        else if (img.runtime == "dalvik" && !s.fullDexopt) overrides["dalvik.vm.dexopt-flags"] = "v=n,o=a"
-        // MediaTek: звук, камера, радио ждут «NVRAM готов» от nvram_daemon, которого у нас нет
-        if (TreeFixer.isMtkAudio(paths.root) || File(paths.root, "system/bin/nvram_daemon").isFile) overrides["nvram_init"] = "Ready"
+        if (File(paths.root, "system/bin/nvram_daemon").isFile) overrides["nvram_init"] = "Ready"
         // TouchWiz 4.1+: TvOutService and Samsung EDS look for HDMI/MHL hardware and keep crashing or blocking boot
         if (img.api >= 16 && (img.skin.contains("TouchWiz", true) || img.skin.contains("One UI", true))) {
             overrides["ro.tvout.enable"] = "false"
@@ -454,23 +348,8 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                 VoldStub(paths, img.sdcardPath, ::log, name).also { it.serve(); extraStubs.add(it) }
             }
         }
-        // MediaTek: libaudioflinger сам работает с устройством /dev/eac (звуковой драйвер MTK) и читает из
-        // него — наш канал звука под тем же именем его вешает, а за ним mediaserver и всю систему.
-        // Для MTK /dev/eac ведёт в /dev/null: без звука, но без зависания.
-        if (TreeFixer.isMtkAudio(paths.root)) {
-            runCatching {
-                val eac = audio.fifo
-                if (!isLinkTo(eac, "/dev/null")) { eac.delete(); android.system.Os.symlink("/dev/null", eac.absolutePath) }
-                // голосовой канал модема (CCCI): без него AudioMTKHardware бесконечно ждёт модем
-                for (n in listOf("ccci_pcm_rx", "ccci_pcm_tx")) {
-                    val f = File(paths.root, "dev/$n")
-                    if (!isLinkTo(f, "/dev/null")) { f.delete(); android.system.Os.symlink("/dev/null", f.absolutePath) }
-                }
-            }
-            // our HAL replaces the MTK one (TreeFixer) and plays through its own channel
-            audio.makeFifo(); audio.start()
-            log("audio: MediaTek, emulator HAL via /dev/aemu_pcm")
-        } else { audio.makeFifo(); audio.start() }
+        audio.makeFifo()
+        audio.start()
         events.start()
         lights.start()
         sensors.start()
@@ -487,9 +366,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         val netCfg = if (s.netProxy) net.start() else GuestRunner.NetConfig()
         val r = GuestRunner(paths, img, netCfg.copy(glPath = if (s.gpu) "/dev/socket/gl" else null)).also {
             it.sdcardHost = sd
-            // отладка: файл run/binder.verbose включает полную трассировку binder в binder-warn.log
             it.binderVerbose = File(paths.bin, "binder.verbose").exists()
-            it.userQemuArgs = s.qemuArgs
         }
         runnerRef = r
         Keeper.hold(ctx, img.name)
@@ -653,10 +530,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         var props = propsFile
         // звук: с ro.kernel.qemu=1 mediaserver берёт эмуляторный вывод в /dev/eac
         if (svc.name == "mediaserver") props = this.props.privateCopy("media", mapOf("ro.kernel.qemu" to "1"))
-        val argv = if (svc.name == "zygote" && !settings.jit && img.runtime == "dalvik")
-            svc.argv.take(1) + "-Xint:fast" + svc.argv.drop(1) else svc.argv
-        // отладка: файл run/strace.<служба> включает трассировку системных вызовов qemu
-        if (File(paths.bin, "strace.${svc.name}").exists()) extra["QEMU_STRACE"] = "1"
+        val argv = svc.argv
         if (engine == Engine.N64 && props != null) extra["AEMU64_PROPS_FILE"] = props.absolutePath
         // the engine's own 64-bit HAL service over a vendor's firmware: its libraries are the engine's copy of its VNDK
         if (engine == Engine.N64) kernel.ownVndkDir?.let { dir ->
@@ -738,7 +612,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         val reboot = v.startsWith("reboot")
         val reason = v.substringAfter(',', "")
         log("guest requested ${if (reboot) "reboot" else "power off"}${if (reason.isNotEmpty()) " ($reason)" else ""}")
-        if (reason == "recovery" && !RecoveryImage.installed(paths)) log("no recovery installed, booting the system again")
         onPower?.invoke(reboot, reason)
     }
 
@@ -881,9 +754,8 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         if (engine == Engine.N64 && kernel.webViewSingleProcess)
             runCatching { guestShell("cmd webviewupdate disable-multiprocess", 30_000) }
         TreeFixer(ctx, paths, img, ::log).noScreenSleep()
-        disableBrokenComponents()
         if (img.api >= 24) runCatching { enableHome() }.onFailure { log("home screen check failed: $it") }
-        val img2 =img.copy(lastBootMs = bootDoneAt - bootAt, bootCount = img.bootCount + 1)
+        val img2 = img.copy(lastBootMs = bootDoneAt - bootAt, bootCount = img.bootCount + 1)
         ImageStore.save(ctx, img2)
     }
 
@@ -949,27 +821,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         guestShell("pm enable $c; am start -a android.intent.action.MAIN -c android.intent.category.HOME", 30_000)
     }
 
-    /**
-     * 2.3–4.1 Google network location (in Play services and in Maps) calls TelephonyRegistry.listen with notifyNow at
-     * start: the reply of that call is lost between the nested oneway callback and the reply, and the service dies with
-     * "Unknown exception code" and a "has stopped" dialog on every boot. Nothing here needs network location.
-     */
-    private fun disableBrokenComponents() {
-        if (img.api !in 9..16) return
-        val marker = File(paths.root, "data/.aemu-components-disabled2")
-        if (marker.isFile) return
-        val list = listOf(
-            "com.google.android.location/com.google.android.location.NetworkLocationService",
-            "com.google.android.location/com.google.android.location.internal.server.NetworkLocationService",
-            "com.google.android.apps.maps/com.google.android.location.internal.server.NetworkLocationService",
-            "com.google.android.apps.maps/com.google.android.location.NetworkLocationService",
-        )
-        // PATH of 2.3–4.x starts with /sbin: the pm script's "app_process" is then looked up there and qemu gives up
-        for (c in list) runCatching { guestRunner.run(listOf("/system/bin/sh", "-c", "export PATH=/system/bin:/system/xbin:\$PATH; pm disable $c"), 120_000) }
-        runCatching { marker.writeText("1") }
-    }
-
-    /** qemu maps a guest path into the tree only if the file exists there, so the shim's request file is pre-made */
     private val power: File get() = File(paths.root, "dev/aemu_power")
 
     private fun watchdog() {
@@ -1026,10 +877,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                         synchronized(procs) { procs["zygote"] }?.let { z -> pidOf(z)?.let { runCatching { AProcess.sendSignal(it, 9) } } }
                         continue
                     }
-                    // родной audio_policy производителя может падать с нашим HAL — подменяем на AOSP
-                    if (name == "mediaserver" && (code == 139 || code == 134)) swapAudioPolicy(crashed = n >= 3)
-                    // (init restarts every service that is not oneshot; a HAL that leaves when its only client, system_server, is
-                    // restarted would otherwise keep the new system_server waiting for it forever)
                     val hal = name.contains("-hal-") && n < 3
                     if (svc != null && (svc.restart || name in ALWAYS_RESTART || hal) && code != 137 && code != 143 && n < 12) {
                         restarts[name] = n + 1
@@ -1040,49 +887,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                 }
             }
         }, "vm-watchdog").apply { isDaemon = true; start() }
-    }
-
-    /**
-     * Ставит политику AOSP 4.3 за обёрткой: родная сохраняется, лишние потоки производителя
-     * (Samsung: 0..14 против 0..9 в AOSP) обёртка сводит к MUSIC, чтобы AOSP-код не писал за массив.
-     */
-    private fun swapAudioPolicy(crashed: Boolean = false) {
-        if (img.api < 16) return
-        val f = File(paths.root, "system/lib/hw/audio_policy.default.so")
-        val aosp = File(paths.root, "system/lib/libaemu_apaosp.so")
-        val parked = File(paths.root, "system/.aemu-parked/system#lib#hw#audio_policy.default.so")
-        // MediaTek: AudioPolicyService переделан (другие ops и слоты), политика AOSP в нём падает.
-        // Родная политика MTK падала только из-за проверки DRVB, которую теперь снимает TreeFixer
-        if (TreeFixer.isMtkAudio(paths.root)) {
-            if (parked.isFile) runCatching {
-                parked.copyTo(f, overwrite = true); parked.delete(); aosp.delete()
-                log("audio: MediaTek, restored stock audio_policy")
-            }
-            return
-        }
-        // the AOSP policy itself crashes in some vendors' audio services (Samsung 4.4: its first output is not found
-        // right after it is added): after three more crashes in a row it is taken out again for good, and mediaserver
-        // runs as it did before the swap
-        val bad = File(paths.root, "system/.aemu-parked/audio_policy.aosp-bad")
-        if (bad.isFile) return
-        fun assetSize(n: String) = runCatching { EngineAssets.size(ctx, "engines/kk/$n") }.getOrDefault(-1L)
-        if (aosp.length() == assetSize("audio_policy.default.so") && f.length() == assetSize("audio_policy.wrap.so")) {
-            if (!crashed) return
-            runCatching {
-                bad.parentFile?.mkdirs(); bad.writeText("")
-                aosp.delete()
-                if (parked.isFile) { parked.copyTo(f, overwrite = true); parked.delete() } else f.delete()
-                log("audio: the AOSP audio_policy crashes here too, removed it")
-            }
-            return
-        }
-        runCatching {
-            parked.parentFile?.mkdirs()
-            if (!parked.isFile && f.isFile) f.copyTo(parked, overwrite = true)
-            EngineAssets.open(ctx, "engines/kk/audio_policy.default.so").use { i -> aosp.outputStream().use { o -> i.copyTo(o) } }
-            EngineAssets.open(ctx, "engines/kk/audio_policy.wrap.so").use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-            log("audio: firmware audio_policy crashes, installed AOSP one (stock kept)")
-        }
     }
 
     @Volatile private var plannedRestart = false

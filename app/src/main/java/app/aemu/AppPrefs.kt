@@ -43,7 +43,7 @@ object AppPrefs {
     fun language(ctx: Context): String = sp(ctx).getString("lang", "") ?: ""
     fun setLanguage(ctx: Context, tag: String) = sp(ctx).edit().putString("lang", tag).apply()
 
-    fun theme(ctx: Context): Int = sp(ctx).getInt("theme", THEME_SYSTEM)
+    fun theme(ctx: Context): Int = sp(ctx).getInt("theme", THEME_DARK)
     fun setTheme(ctx: Context, v: Int) = sp(ctx).edit().putInt("theme", v).apply()
 
     fun dynamicColor(ctx: Context): Boolean = sp(ctx).getBoolean("dynamic", false)
@@ -55,13 +55,12 @@ object AppPrefs {
     fun lastUpdateCheck(ctx: Context): Long = sp(ctx).getLong("last_update_check", 0L)
     fun setLastUpdateCheck(ctx: Context, v: Long) = sp(ctx).edit().putLong("last_update_check", v).apply()
 
-    /** Умолчания, которые получает только что импортированная система. */
+    /** Default settings applied to newly imported systems. */
     fun defaults(ctx: Context): VmSettings {
         val p = sp(ctx)
         val d = VmSettings()
         return d.copy(
             gpu = p.getBoolean("def_gpu", d.gpu),
-            jit = p.getBoolean("def_jit", d.jit),
             netProxy = p.getBoolean("def_proxy", d.netProxy),
             showNavBar = p.getBoolean("def_nav", d.showNavBar),
             keepScreenOn = p.getBoolean("def_awake", d.keepScreenOn),
@@ -70,7 +69,7 @@ object AppPrefs {
     }
 
     fun setDefaults(ctx: Context, s: VmSettings) = sp(ctx).edit()
-        .putBoolean("def_gpu", s.gpu).putBoolean("def_jit", s.jit).putBoolean("def_proxy", s.netProxy)
+        .putBoolean("def_gpu", s.gpu).putBoolean("def_proxy", s.netProxy)
         .putBoolean("def_nav", s.showNavBar).putBoolean("def_awake", s.keepScreenOn).putBoolean("def_led", s.showLed).apply()
 
     /** Контекст с выбранным языком — для attachBaseContext каждой активности. */
