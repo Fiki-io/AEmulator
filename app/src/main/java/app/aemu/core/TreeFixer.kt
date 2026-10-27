@@ -186,22 +186,8 @@ class TreeFixer(
      * our HAL there; it forwards the DcRemove filter AudioFlinger links from that library to the original.
      */
     private fun swapMtkAudioHal() {
-        if (engine != Engine.KK || img.api < 17) return
-        val lib = File(root, "system/lib/libaudio.primary.default.so")
-        val orig = File(root, "system/lib/libaudio.mtk.so")
-        if (!orig.isFile) {
-            if (!lib.isFile || !isMtkAudio(root)) return
-            if (!lib.renameTo(orig)) return
-        }
-        val asset = "engines/kk/audio.primary.mtk.so"
-        val size = runCatching { EngineAssets.size(ctx, asset) }.getOrDefault(-1L)
-        if (lib.isFile && lib.length() == size && sameContent(asset, lib)) return
-        runCatching {
-            EngineAssets.open(ctx, asset).use { i -> lib.outputStream().use { o -> i.copyTo(o) } }
-            lib.setReadable(true, false)
-            log("audio: MediaTek HAL replaced with the emulator HAL")
-        }.onFailure { log("audio: MediaTek HAL swap failed: ${it.message}") }
     }
+
 
     /**
      * MIUI 8 reads system/media/theme/theme_compatibility.xml while zygote preloads classes. Some builds ship it with
@@ -357,22 +343,6 @@ class TreeFixer(
         // manifest that lists exactly them (a HAL that is listed but not running is waited for without end).
         // engines/n64-gl: SwiftShader, the same for every release.
         var copied = 0
-        // the GPU bridge for 32-bit programs (native/glroute): libEGL takes it before the software renderer, and it
-        // sends the toolkit's drawing on to that renderer; without the GPU option it is not there at all
-        kernel.gpuBridge32?.let { name ->
-            val on = img.settings.gpu && File(root, "system/bin/app_process32").isFile
-            for ((asset, to) in listOf((if (kernel.gpuBridge32Open) "libGLES_aemu.so" else "libGLES_route.so") to name, "libGLES_split.so" to "libGLES_split.so", "libGLES.so" to "libGLES_bridge.so")) {
-                val f = File(root, "system/lib/egl/$to")
-                if (on) runCatching {
-                    val len = EngineAssets.size(ctx, "engines/kk/$asset")
-                    if (isLink(f) || !f.isFile || f.length() != len) {
-                        f.delete()
-                        EngineAssets.open(ctx, "engines/kk/$asset").use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-                        f.setReadable(true, false); f.setExecutable(true, false); copied++
-                    }
-                } else if (to != name || !isLink(f)) f.delete()
-            }
-        }
         // 10+ over the 8.1 vendor side: the codec service there is 8.1's, and its minijail takes one @include in a
         // policy; the system image's policy has a second one (code coverage, empty in a release build), and the
         // service gives up on it. That line goes.
@@ -590,35 +560,11 @@ class TreeFixer(
                 }
             }
         }
-        // mediaserver of a 6.0 arm64 firmware is a 32-bit program (it runs through qemu-arm): camera and sound
-        // reach the phone through the same 32-bit HALs as on the other engines
-        if (File(root, "system/bin/mediaserver").let { it.isFile && !isElf64(it) }) {
-            // Samsung's audio_format_t is 64 bits wide (5.1: "%lld not supported", 6.0: "%llx not valid"): its AudioFlinger takes a format from the HAL in two registers
-            val audioHal = if (kernel.wideAudioFormat && contains(File(root, "system/lib/libaudioflinger.so"), "HAL format %ll"))
-                "engines/kk/audio.primary.fmt64.so" else "engines/kk/audio.primary.aosp.so"
-            // a kernel may bring its own build of the 32-bit camera HAL (7.1: a newer module API for Camera.openLegacy)
-            val cameraHal = kernel.assets.reversed().map { "$it/system#lib#hw#camera.default.so" }
-                .firstOrNull { a -> runCatching { check(EngineAssets.exists(ctx, a)) }.isSuccess } ?: "engines/common/camera.default.so"
-            for ((asset, to) in listOf(cameraHal to "system/lib/hw/camera.default.so",
-                audioHal to "system/lib/hw/audio.primary.default.so")) {
-                val dst = File(root, to)
-                val size = runCatching { EngineAssets.size(ctx, asset) }.getOrDefault(-1L)
-                if (dst.isFile && size >= 0 && dst.length() == size && sameContent(asset, dst)) continue
-                runCatching {
-                    dst.parentFile?.mkdirs()
-                    val parked = File(root, "system/.aemu-parked/${to.replace('/', '#')}")
-                    parked.parentFile?.mkdirs()
-                    if (dst.isFile && !parked.exists()) dst.renameTo(parked)
-                    EngineAssets.open(ctx, asset).use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
-                    dst.setReadable(true, false); copied++
-                }.onFailure { log("$to: ${it.message}") }
-            }
-        }
         // the Java stubs (bluetooth manager, network, tool runner) are dex code: the same jar as for 32-bit guests
         runCatching {
             // (read whole: a jar is stored compressed in the package, and such an asset has no length to ask for)
             val jar = File(root, "system/framework/aemu-stubs.jar")
-            val bytes = EngineAssets.open(ctx, "engines/kk/aemu-stubs.jar").use { it.readBytes() }
+            val bytes = EngineAssets.open(ctx, "engines/common/aemu-stubs.jar").use { it.readBytes() }
             if (!jar.isFile || !jar.readBytes().contentEquals(bytes)) {
                 jar.writeBytes(bytes)
                 jar.setReadable(true, false); copied++
@@ -692,19 +638,6 @@ class TreeFixer(
                     if (f.renameTo(dst)) parked++
                 }
             }
-            val egl32 = File(root, "system/lib/egl")
-            // an image that ran on the 4.4 engine before has our GL shim under the renderer's name
-            File(egl32, "libGLES_android.so.sw").let { sw ->
-                if (sw.isFile) { File(egl32, "libGLES_android.so").delete(); sw.renameTo(File(egl32, "libGLES_android.so")) }
-            }
-            val bridge32 = img.settings.gpu && kernel.gpuBridge32 != null
-            if (File(egl32, "libGLES_android.so").isFile && !bridge32) {
-                for (n in listOf("libGLES_aemu.so", "libGLES_bridge.so", "libEGL_aemu.so", "libGLESv1_CM_aemu.so", "libGLESv2_aemu.so", "libGLES.so"))
-                    File(egl32, n).let { if (isLink(it)) Os.remove(it.absolutePath) else it.delete() }
-                // a kernel that ships SwiftShader for 32-bit programs too: libEGL takes libGLES.so before anything
-                // else in the directory, so the software renderer does not get that name
-                if (!File(egl32, "libGLESv2_swiftshader.so").isFile) runCatching { Os.symlink("libGLES_android.so", File(egl32, "libGLES.so").path) }
-            }
         }
         if (parked > 0) log("vendor HALs set aside: $parked")
     }
@@ -713,107 +646,8 @@ class TreeFixer(
         "camera", "gps", "fingerprint", "gxfingerprint", "consumerir", "bluetooth", "nfc", "vibrator", "keystore", "gatekeeper")
 
     private fun installEngineFiles() {
-        val copies = when (engine) {
-            Engine.KK -> listOf(
-                "libashmemshim.so" to "system/lib/libashmemshim.so",
-                "libGLES.so" to "system/lib/egl/libGLES_bridge.so",
-                "audio.primary.default.so" to "system/lib/hw/audio.primary.default.so",
-                "gralloc.default.so" to "system/lib/hw/gralloc.default.so",
-                "aemu-stubs.jar" to "system/framework/aemu-stubs.jar",
-            )
-            Engine.GB -> listOf(
-                "libashmemshim.so" to "system/lib/libashmemshim.so",
-                "libGLES_dhd.so" to "system/lib/egl/libGLES_dhd.so",
-                "gralloc.default.so" to "system/lib/hw/gralloc.default.so",
-            )
-            Engine.N64 -> return installNative64()
-        }
-        File(root, "system/bin/fbpaint").delete()
-        // a static network debugging tool shipped by older versions; nothing runs it
-        File(root, "system/bin/netprobe").delete()
-        // Widevine L3 aborts on its first session under the translator (6.0: right after "Could not read
-        // /data/mediadrm/IDM0/ay64.dat"); up to 6.0 it lives in mediaserver, which takes camera and audio down with it.
-        // Without the plugin MediaDrm says Widevine is not supported and players fall back to clear content.
-        if (engine == Engine.KK) for (d in listOf("system/vendor/lib/mediadrm", "vendor/lib/mediadrm")) {
-            val wv = File(root, "$d/libwvdrmengine.so")
-            if (wv.isFile && !isLink(wv)) {
-                val parked = File(root, "system/.aemu-parked/${d.replace('/', '#')}#libwvdrmengine.so")
-                parked.parentFile?.mkdirs(); parked.delete()
-                if (wv.renameTo(parked)) log("Widevine plugin set aside (aborts under the translator)")
-            }
-        }
-        // образы, подготовленные старой версией: вернуть родной gralloc.default из «парковки»
-        val parkedGralloc = File(root, "system/.aemu-parked/system#lib#hw#gralloc.default.so")
-        if (parkedGralloc.isFile) {
-            val g = File(root, "system/lib/hw/gralloc.default.so")
-            g.delete(); parkedGralloc.renameTo(g)
-        }
-        // gralloc.default, который выделяет память через ION (MediaTek и др.), без ядра не работает:
-        // устройство выделения получается пустым и SurfaceFlinger падает — ставим gralloc движка
-        val romGralloc = File(root, "system/lib/hw/gralloc.default.so")
-        if (engine == Engine.KK && romGralloc.isFile && romGralloc.length() < 2_000_000) {
-            val text = runCatching { String(romGralloc.readBytes(), Charsets.ISO_8859_1) }.getOrDefault("")
-            if (text.contains("libion.so") || text.contains("ion_alloc")) {
-                val parked = File(root, "system/.aemu-parked/system#lib#hw#gralloc.default.so.ion")
-                parked.parentFile?.mkdirs()
-                if (romGralloc.renameTo(parked)) log("firmware gralloc uses ION, replaced with engine gralloc")
-            }
-        }
-        var copied = 0
-        // 7.0+ libEGL on a qemu kernel (qemu.gles=1) only tries the "emulation" driver name
-        val nougat = if (img.api >= 24 && copies.any { it.second == "system/lib/egl/libGLES_bridge.so" })
-            listOf("libGLES_split.so" to "system/lib/egl/libGLES_emulation.so") else emptyList()
-        // 7.0+ without the GPU bridge: libEGL would still find the bridge by scanning egl/, so it is not there at all
-        val noBridge = img.api >= 24 && !img.settings.gpu
-        if (noBridge) {
-            for (n in listOf("libGLES_bridge.so", "libGLES_emulation.so")) File(root, "system/lib/egl/$n").delete()
-            // a scan skips libGLES_android.so; in "vendor software renderer" mode (qemu.gles=2) libEGL asks for
-            // libGLES_swiftshader.so, which here is the stock software renderer
-            val sw = File(root, "system/lib/egl/libGLES_swiftshader.so")
-            if (!sw.exists() && !isLink(sw) && File(root, "system/lib/egl/libGLES_android.so").isFile)
-                runCatching { Os.symlink("libGLES_android.so", sw.path) }
-        }
-        for ((from, to) in (copies + nougat).filter { !noBridge || !it.second.startsWith("system/lib/egl/libGLES_") } +
-            listOf("@libaemushim.so" to "system/lib/libaemushim.so", "@lights.default.so" to "system/lib/hw/lights.default.so",
-                "@sensors.default.so" to "system/lib/hw/sensors.default.so",
-                "@camera.default.so" to "system/lib/hw/camera.default.so")) {
-            val dst = File(root, to)
-            // gralloc движка — только если в прошивке своего нет
-            if (from == "gralloc.default.so" && dst.isFile) continue
-            // «@» — общий для всех движков файл
-            // звуковой HAL стенда разложен под AudioFlinger HTC; остальным 4.2+ — вариант с раскладкой AOSP.
-            // У Samsung свой audio_stream_out (лишние слоты) — с ним AOSP-вариант роняет mediaserver,
-            // поэтому там остаётся исходный: выход не открывается, система работает без звука.
-            // Samsung 4.3 AudioFlinger uses the KitKat slots (verified on I9300 XXUGNJ2: init_check 0x44,
-            // open_output_stream 0x6c, stream write 0x40), so only 4.1–4.2 TouchWiz keeps the stand HAL
-            val samsung = img.skin.contains("TouchWiz", true) || img.skin.contains("Samsung", true)
-            val htcLike = img.skin.contains("HTC", true)
-            val name = when {
-                from != "audio.primary.default.so" || htcLike -> from
-                // 4.0 has its own audio_hw_device layout; Qualcomm CAF builds add set_fm_volume/open_output_session
-                img.api in 14..15 -> if (qcomAudioFlinger()) "audio.primary.ics-qcom.so" else "audio.primary.ics.so"
-                img.api >= 16 -> "audio.primary.aosp.so"
-                else -> from
-            }
-            val asset = if (name.startsWith("@")) "engines/common/${name.drop(1)}" else "engines/${engine.id}/$name"
-            val size = runCatching { EngineAssets.size(ctx, asset) }.getOrDefault(-1L)
-            // одинаковый размер ещё не значит тот же файл (правки движка на месте, варианты HAL) — сверяем CRC
-            if (dst.isFile && size >= 0 && dst.length() == size && sameContent(asset, dst)) continue
-            runCatching {
-                dst.parentFile?.mkdirs()
-                if (isLink(dst)) Os.remove(dst.absolutePath)
-                EngineAssets.open(ctx, asset).use { i -> dst.outputStream().use { o -> i.copyTo(o) } }
-                dst.setReadable(true, false)
-                dst.setExecutable(true, false)
-                copied++
-            }.onFailure { log("${from.removePrefix("@")} missing from engine set: ${it.message}") }
-        }
-        // Replicate camera.default.so into vendor/lib/hw and 64-bit libraries for modern cameraserver and apps
-        val cam32 = File(root, "system/lib/hw/camera.default.so")
-        val vcam32 = File(root, "vendor/lib/hw/camera.default.so")
-        if (cam32.isFile && File(root, "vendor/lib/hw").isDirectory && (!vcam32.exists() || vcam32.length() != cam32.length())) {
-            runCatching { cam32.copyTo(vcam32, overwrite = true) }
-        }
+        installNative64()
+    }
         if (File(root, "system/lib64").isDirectory) {
             val cam64 = File(root, "system/lib64/hw/camera.default.so")
             val vcam64 = File(root, "vendor/lib64/hw/camera.default.so")
@@ -860,34 +694,6 @@ class TreeFixer(
                 copied++
             }.onFailure { log("$n not replaced: ${it.message}") }
         }
-        // камера 2.3: заглушка вместо вендорской libcamera.so, которая лезет в /dev/msm_camera
-        val cam = File(root, "system/lib/libcamera.so")
-        val stamp = File(root, "system/lib/libcamera.so.aemu")
-        val parkedCam = File(root, "system/.aemu-parked/system#lib#libcamera.so")
-        val htc = img.skin.contains("HTC", true)
-        // заглушка собрана под интерфейс камеры HTC — у других производителей оставляем родную
-        if (!htc && stamp.isFile && parkedCam.isFile) { cam.delete(); parkedCam.renameTo(cam); stamp.delete() }
-        if (engine == Engine.GB && htc) {
-            if (cam.isFile && !stamp.isFile) {
-                runCatching {
-                    File(root, "system/.aemu-parked").mkdirs()
-                    cam.copyTo(File(root, "system/.aemu-parked/system#lib#libcamera.so"), overwrite = true)
-                    EngineAssets.open(ctx, "engines/gb/libcamera.so").use { i -> cam.outputStream().use { o -> i.copyTo(o) } }
-                    stamp.writeText("1")
-                }
-            }
-        }
-        // 2.3, Qualcomm: the camera HAL needs the modem (ONCRPC) and quits mediaserver without it — a HAL with no cameras
-        if (img.api <= 10 && !htc && cam.isFile && !parkedCam.exists() && cam.length() > 4096) {
-            val text = runCatching { String(cam.readBytes(), Charsets.ISO_8859_1) }.getOrDefault("")
-            if (listOf("libcald", "liboemcamera", "oncrpc").any { text.contains(it) }) runCatching {
-                File(root, "system/.aemu-parked").mkdirs()
-                cam.copyTo(parkedCam, overwrite = true)
-                EngineAssets.open(ctx, "engines/common/libcamera.none.so").use { i -> cam.outputStream().use { o -> i.copyTo(o) } }
-                log("camera: the firmware's 2.3 HAL needs the modem, replaced with an empty one (stock kept)")
-                copied++
-            }
-        }
         if (copied > 0) log("engine ${engine.id} files updated: $copied")
     }
 
@@ -920,45 +726,9 @@ class TreeFixer(
 
     /** Направляет загрузчик EGL прошивки на GL-мост (или на программный растеризатор). */
     private fun eglConfig(gpu: Boolean) {
-        val dir = File(root, "system/lib/egl").apply { mkdirs() }
-        val cfg = File(dir, "egl.cfg")
-        val cfgRom = File(dir, "egl.cfg.rom")
-        if (!cfgRom.isFile && cfg.isFile) cfg.copyTo(cfgRom, overwrite = true)
-        when (engine) {
-            Engine.N64 -> {}
-            Engine.GB -> cfg.writeText(if (gpu) "0 0 dhd\n" else "0 0 android\n")
-            Engine.KK -> {
-                // сам мост лежит как libGLES_bridge.so; все имена, которые ищут загрузчики EGL (libGLES.so у 4.4,
-                // libGLES_<тег>.so по egl.cfg, раздельные libEGL_/libGLESv*_), занимает переходник libGLES_split:
-                // он чинит загрузку текстур, сводит раздельные библиотеки в один мост и даёт SurfaceFlinger ES2
-                val bridge = File(dir, "libGLES_bridge.so")
-                val sw = File(dir, "libGLES_android.so")
-                val swOff = File(dir, "libGLES_android.so.sw")
-                val names = listOf("libGLES.so", "libGLES_aemu.so", "libGLES_android.so", "libEGL_aemu.so", "libGLESv1_CM_aemu.so", "libGLESv2_aemu.so")
-                if (gpu && bridge.isFile) {
-                    if (!swOff.isFile && sw.isFile && sw.length() != splitSize() && sw.length() != assetSize(OPEN_GL)) sw.renameTo(swOff)
-                    // test switch: a file "glopen" in the image's directory puts the open bridge (native/glbridge,
-                    // armv7) on those names; it stands in front of the shim, which keeps the compositor and hwui
-                    val open = openGl32()
-                    val asset = if (open) OPEN_GL else "engines/kk/libGLES_split.so"
-                    val all = names + (if (img.api >= 24) listOf("libGLES_emulation.so") else emptyList())
-                    runCatching {
-                        for (n in all) installAsset(asset, File(dir, n))
-                        val shim = File(dir, "libGLES_split.so")
-                        if (open) installAsset("engines/kk/libGLES_split.so", shim) else shim.delete()
-                    }.onFailure { log("GL: shim failed to install: ${it.message}") }
-                    if (open) log("GL: open bridge in front of the 4.4 engine's one (glopen)")
-                    // часть загрузчиков (Samsung 4.3) берут последнюю строку, остальные — строку с impl=1
-                    cfg.writeText("0 0 android\n0 1 aemu\n")
-                } else {
-                    // программная отрисовка: убираем все наши имена, иначе загрузчик 4.4 всё равно найдёт libGLES.so
-                    for (n in names) if (n != "libGLES_android.so") File(dir, n).delete()
-                    if (swOff.isFile) { sw.delete(); swOff.renameTo(sw) }
-                    cfg.writeText("0 0 android\n")
-                }
-            }
-        }
+        if (engine == Engine.N64) return
     }
+
 
     private fun isElf64(f: File): Boolean = runCatching {
         f.inputStream().use { i -> val b = ByteArray(5); i.read(b) == 5 && b[4] == 2.toByte() }
@@ -1024,11 +794,8 @@ class TreeFixer(
         EngineAssets.open(ctx, a).use { i -> f.outputStream().use { o -> i.copyTo(o) } }
         f.setReadable(true, false); f.setExecutable(true, false)
     }
-    /** the open GLES bridge for the 32-bit engine is asked for (file "glopen" in the image's directory) */
-    private fun openGl32(): Boolean = engine == Engine.KK && File(paths.dir, "glopen").isFile &&
-        assetSize(OPEN_GL) > 0
-
-    private fun splitSize(): Long = runCatching { EngineAssets.size(ctx, "engines/kk/libGLES_split.so") }.getOrDefault(-1L)
+    private fun openGl32(): Boolean = false
+    private fun splitSize(): Long = -1L
 
     private fun makeDataDirs() {
         var made = 0
@@ -1681,7 +1448,7 @@ class TreeFixer(
     /** Кадровый буфер — обычный файл, qemu отвечает на ioctl FBIOGET_* от гостя. */
     private fun makeFb() {
         val s = img.settings
-        val (w, h) = if (engine == Engine.GB) 480 to 800 else s.width to s.height
+        val (w, h) = s.width to s.height
         // двойная буферизация: гость листает страницы через FBIOPAN_DISPLAY
         // qemu reports smem_len = two 32-bit pages (TWRP draws BGRA_8888); mmap past the file end would SIGBUS
         val need = w.toLong() * h * 4 * 2

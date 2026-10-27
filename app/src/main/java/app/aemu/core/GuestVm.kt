@@ -4,10 +4,6 @@ import android.content.Context
 import android.os.Process as AProcess
 import android.os.SystemClock
 import android.view.Surface
-import dev.lk.dhd.BinderSlot
-import dev.lk.dhd.GlSlot
-import dev.lk.dhd.Slot
-import dev.lk.m7sense.GlBridge
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
@@ -69,7 +65,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
     @Volatile var failure: String? = null
         private set
     @Volatile var surface: Surface? = null
-        set(v) { field = v; if (engine == Engine.KK) GlBridge.surface(v) else if (engine == Engine.N64 && kernel.gpuBridge64) GlHost.surface(v) }
+        set(v) { field = v; if (engine == Engine.N64 && kernel.gpuBridge64) GlHost.surface(v) }
 
     private val lines = CopyOnWriteArrayList<String>()
     private val listeners = CopyOnWriteArrayList<(String) -> Unit>()
@@ -149,9 +145,8 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         runCatching { logFile.writeText("") }
         log("image \"${img.name}\": recovery mode")
         if (!RecoveryImage.installed(paths)) error("this firmware has no recovery installed")
-        val is64 = RecoveryImage.isElf64(paths)
-        val qemu = paths.nativeBin(if (is64) kernel.runner else Engine.KK.qemu)
-        if (!is64 && !(img.settings.native32 && CpuInfo.hasAArch32) && !qemu.canExecute()) error("translator ${Engine.KK.qemu} is not executable")
+        val runner = paths.nativeBin(kernel.runner)
+        if (!runner.canExecute()) error("native runner ${kernel.runner} is not executable")
         killLeftovers()
         HostNative.limitStackSafe()
         TreeFixer(ctx, paths, img, ::log).fixup()   // framebuffer, input node
@@ -180,11 +175,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         runCatching { File(r, "tmp/recovery.log").delete() }
         // debugging: run/recovery.strace traces the guest's system calls into run/recovery.trace
         val trace = if (File(paths.bin, "recovery.strace").exists()) listOf("-strace", "-D", File(paths.bin, "recovery.trace").absolutePath) else emptyList()
-        val cmd = when {
-            img.settings.native32 && CpuInfo.hasAArch32 && !is64 -> listOf(File(r, "sbin/recovery").absolutePath)
-            is64 -> listOf(qemu.absolutePath, "/sbin/recovery", File(r, "sbin/recovery").absolutePath)
-            else -> listOf(qemu.absolutePath, "-L", r.absolutePath, "-0", "/sbin/recovery") + trace + File(r, "sbin/recovery").absolutePath
-        }
+        val cmd = listOf(runner.absolutePath, "/sbin/recovery", File(r, "sbin/recovery").absolutePath)
         val pb = ProcessBuilder(cmd)
             .directory(r).redirectErrorStream(true).redirectOutput(File(paths.bin, "recovery.out"))
         pb.environment().clear()
@@ -239,9 +230,9 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         runCatching { logFile.writeText("") }
         log("image \"${img.name}\": ${img.displayVersion}, ${img.skin}, engine ${engine.title}")
         if (!File(paths.root, "system/framework").isDirectory) error("firmware tree missing")
-        val qemu = paths.nativeBin(if (engine == Engine.N64) kernel.runner else engine.qemu)
-        if (!qemu.canExecute()) error("translator ${qemu.name} is not executable")
-        if (engine == Engine.N64) log("· kernel ${kernel.tag} (${kernel.runner})")
+        val runner = paths.nativeBin(kernel.runner)
+        if (!runner.canExecute()) error("native runner ${runner.name} is not executable")
+        log("· kernel ${kernel.tag} (${kernel.runner})")
         // the guest's SwiftShader (legacy, reads SwiftShader.ini from the process's directory, this one) finds one core
         // on Android and draws every frame in a single thread: MIUI 8 at 1080×1920 flipped pages at 19 fps, 59 with 8.
         // Every N64 kernel ships that build (n64-gl), and the guest's services and apps all run in this directory
@@ -264,9 +255,8 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         // 2. свойства
         val s = settings
         val overrides = LinkedHashMap<String, String>()
-        // 2.3: ro.kernel.qemu=1 включает в фреймворке режим эмулятора — ставим его только mediaserver
-        overrides["ro.kernel.qemu"] = if (engine == Engine.GB) "0" else "1"
-        overrides["ro.kernel.qemu.gles"] = if (s.gpu && (s.hwui || engine == Engine.GB)) "1" else "0"
+        overrides["ro.kernel.qemu"] = "0"
+        overrides["ro.kernel.qemu.gles"] = if (s.gpu && s.hwui) "1" else "0"
         overrides["qemu.gles"] = if (s.gpu) "1" else "0"
         if (engine == Engine.N64) {             // SwiftShader (GLES 2/3 on the CPU) where the engine has it for this release
             // (8.0+ libEGL picks the driver by name: 1 is the emulator's host GPU pipe, 2 is SwiftShader)
@@ -281,16 +271,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             val r = GlHost.start(paths.socket("aemu_gl").absolutePath)
             log("GPU bridge: $r")
             glBridge = r.startsWith("ok"); glInfo = r
-        }
-        // 32-bit engine, test switch "glopen" (TreeFixer put the open bridge in front of the engine's own): programs'
-        // contexts go to the same host renderer as on the 64-bit engine; the file's text is the mode (default 2: here the
-        // "software" driver under the bridge is the engine's own, which has no texture EGLImages, and WebView's
-        // threads share their tiles through those - in mode 1 they stay on it and a page draws only its background)
-        if (engine == Engine.KK && s.gpu && File(paths.dir, "glopen").isFile && File(paths.root, "system/lib/egl/libGLES_split.so").isFile) {
-            paths.socket("aemu_gl").parentFile?.mkdirs()
-            val r = GlHost.start(paths.socket("aemu_gl").absolutePath)
-            log("open GPU bridge (32-bit): $r")
-            if (r.startsWith("ok")) overrides["debug.aemu.gl"] = File(paths.dir, "glopen").readText().trim().takeIf { it.isNotEmpty() } ?: "2"
         }
         // 7.0+ libEGL ignores egl.cfg and takes the first libGLES_*.so it finds; without the bridge: the software one
         if (img.api >= 24 && !s.gpu) {
@@ -307,21 +287,11 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         overrides["qemu.sf.lcd_density"] = s.density.toString()
         // MIUI 10 forces the density of the phone's own panel from this one (440 on a 540-pixel screen)
         if (listOf("system/build.prop", "vendor/build.prop").any { runCatching { File(paths.root, it).readText() }.getOrDefault("").contains("persist.miui.density_v2") }) overrides["persist.miui.density_v2"] = s.density.toString()
-        overrides["ro.aemu.host"] = if (engine == Engine.N64) "native" else "qemu-user"
-        if (engine == Engine.N64) {
-            // the phone runs arm64 code only: the 32-bit zygote and its apps go through qemu-arm when it is there
-            if (n64Has32) {
-                overrides["ro.zygote"] = "zygote64_32"
-                overrides["ro.product.cpu.abilist"] = "arm64-v8a,armeabi-v7a,armeabi"
-                overrides["ro.product.cpu.abilist64"] = "arm64-v8a"
-                overrides["ro.product.cpu.abilist32"] = "armeabi-v7a,armeabi"
-            } else {
-                overrides["ro.zygote"] = "zygote64"
-                overrides["ro.product.cpu.abilist"] = "arm64-v8a"
-                overrides["ro.product.cpu.abilist64"] = "arm64-v8a"
-                overrides["ro.product.cpu.abilist32"] = ""
-            }
-        }
+        overrides["ro.aemu.host"] = "native"
+        overrides["ro.zygote"] = "zygote64"
+        overrides["ro.product.cpu.abilist"] = "arm64-v8a"
+        overrides["ro.product.cpu.abilist64"] = "arm64-v8a"
+        overrides["ro.product.cpu.abilist32"] = ""
         overrides["dalvik.vm.execution-mode"] = if (s.jit) "int:jit" else "int:fast"
         if (s.lowRam || s.ramMb in 1..768) overrides["ro.config.low_ram"] = "true"
         if (s.ramMb > 0) {
@@ -568,8 +538,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             // 10+: the package manager requires apexd's binder service, which is there once apexd reports "ready"
             if (svc.name == "zygote" && engine == Engine.N64 && plan.any { it.name == "apexd" })
                 waitFor("apexd", 15_000) { props.get("apexd.status") == "ready" }
-            // 4.2+: заглушка bluetooth_manager до зиготы (system_server с ro.kernel.qemu=1 свою не поднимает)
-            if (svc.name == "zygote" && img.api >= 9 && engine != Engine.GB && File(paths.root, "system/framework/aemu-stubs.jar").isFile) {
+            if (svc.name == "zygote" && File(paths.root, "system/framework/aemu-stubs.jar").isFile) {
                 // 2.3–4.1 look up "bluetooth" instead; without it BluetoothAdapter is null and the vendor's Bluetooth apps crash
                 val btName = if (img.api >= 17) "bluetooth_manager" else "bluetooth"
                 startService(GuestService("aemu-bt", listOf("/system/bin/app_process",
@@ -582,8 +551,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                 startService(GuestService("aemu-vold", listOf("/system/bin/app_process",
                     "-Djava.class.path=/system/framework/aemu-stubs.jar", "/system/bin", "app.aemu.stub.VoldStub") + (if (kernel.volumeAtUserStart) listOf("userstart") else emptyList()), optional = true))
             }
-            // 5.0–7.x: a registered network, otherwise ConnectivityService says "no active network" and browsers stay offline
-            if (svc.name == "zygote" && (if (engine == Engine.N64) kernel.registeredNetwork else img.api in 21..25) && engine != Engine.GB && File(paths.root, "system/framework/aemu-stubs.jar").isFile) {
+            if (svc.name == "zygote" && kernel.registeredNetwork && File(paths.root, "system/framework/aemu-stubs.jar").isFile) {
                 synchronized(procs) { procs.remove("aemu-net") }?.let { runCatching { it.destroyForcibly() } }
                 startService(GuestService("aemu-net", listOf("/system/bin/app_process",
                     "-Djava.class.path=/system/framework/aemu-stubs.jar", "/system/bin", "app.aemu.stub.NetStub") + (if (Kernel64.forApi(img.api).ethernetStandIn) listOf("ethernet") else emptyList()), optional = true))
@@ -616,83 +584,29 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
 
     private fun startBinder() {
         val sock = paths.binderSock.absolutePath
-        when (engine) {
-            Engine.KK -> spawn("binderd", listOf(paths.nativeBin(engine.binderd).absolutePath, "-s", sock), emptyMap())
-            Engine.N64 -> {
-                val env = if (File(paths.bin, "binder.verbose").exists()) mapOf("AEMU_BINDER_VERBOSE" to "1") else emptyMap()
-                val bin = paths.nativeBin(kernel.binderd).absolutePath
-                spawn("binderd", listOf(bin, sock), env)
-                if (kernel.treble) {
-                    spawn("hwbinderd", listOf(bin, paths.hwbinderSock.absolutePath), env)
-                    spawn("vndbinderd", listOf(bin, paths.vndbinderSock.absolutePath), env)
-                    log("· Treble hwbinder and vndbinder daemons started")
-                }
-            }
-            Engine.GB -> if (File(paths.bin, "binderd.kk").exists()) {
-                // эксперимент: более новый binderd движка KK
-                spawn("binderd", listOf(paths.nativeBin(Engine.KK.binderd).absolutePath, "-s", sock), emptyMap())
-            } else {
-                Slot.start(ctx, BinderSlot::class.java, listOf("binderd", "-s", sock), emptyMap(), paths.log("binderd"))
-                log("· binderd started (:binder service)")
-            }
+        val env = if (File(paths.bin, "binder.verbose").exists()) mapOf("AEMU_BINDER_VERBOSE" to "1") else emptyMap()
+        val bin = paths.nativeBin(kernel.binderd).absolutePath
+        spawn("binderd", listOf(bin, sock), env)
+        if (kernel.treble) {
+            spawn("hwbinderd", listOf(bin, paths.hwbinderSock.absolutePath), env)
+            spawn("vndbinderd", listOf(bin, paths.vndbinderSock.absolutePath), env)
+            log("· Treble hwbinder and vndbinder daemons started")
         }
     }
 
     private fun glUp() {
         if (!settings.gpu) { log("GPU bridge off, software rendering"); return }
-        val (w, h) = if (engine == Engine.GB) 480 to 800 else settings.width to settings.height
         paths.glSock.parentFile?.mkdirs()
         paths.glSock.delete()
-        when (engine) {
-            Engine.N64 -> {
-                log("native arm64: graphics are served by the engine's own HALs")
-                // ...except for 32-bit programs, which draw through the 4.4 engine's GPU bridge (its frame file is not shown)
-                if (kernel.gpuBridge32 != null && n64Has32) {
-                    spawn("glserverd", listOf(paths.nativeBin(Engine.KK.glserverd).absolutePath,
-                        "-s", paths.glSock.absolutePath, "-fb", File(paths.bin, "gl32.fb").absolutePath, "-w", "$w", "-h", "$h"), glServerEnv())
-                    waitFor("GL bridge socket", 10_000) { paths.glSock.exists() }
-                }
-            }
-            Engine.GB -> {
-                Slot.start(ctx, GlSlot::class.java,
-                    listOf("glserverd", "-s", paths.glSock.absolutePath, "-fb", paths.fb.absolutePath, "-w", "$w", "-h", "$h"),
-                    emptyMap(), paths.log("glserverd"))
-                waitFor("GL bridge socket", 10_000) { paths.glSock.exists() }
-            }
-            Engine.KK -> {
-                if (surface == null) waitFor("screen surface", 10_000) { surface != null }
-                val sf = surface
-                HostNative.relaxFdsanSafe()
-                // 5.0+: hwui's GL stream has crashed the in-app bridge (SIGSEGV in serve_one_raw took the whole app down);
-                // the standalone glserverd keeps such a crash inside its own process
-                if (img.api < 21 && sf != null && GlBridge.start(sf, paths.glSock.absolutePath, paths.log("glbridge").absolutePath, w, h, false)) {
-                    log("★ GPU bridge running in-app: frames render straight to the surface")
-                    waitFor("GL bridge socket", 5_000) { paths.glSock.exists() }
-                    return
-                }
-                log(if (img.api >= 21) "GPU bridge: standalone glserverd" else "in-app GPU bridge failed, falling back to standalone glserverd")
-                spawn("glserverd", listOf(paths.nativeBin(engine.glserverd).absolutePath,
-                    "-s", paths.glSock.absolutePath, "-fb", paths.fb.absolutePath,
-                    "-notify", paths.frameSock.absolutePath, "-w", "$w", "-h", "$h"), glServerEnv())
-                waitFor("GL bridge socket", 10_000) { paths.glSock.exists() }
-            }
-        }
-    }
-
-    /** the 4.4 engine's GL server reads every GL call of a client with its own system calls; native/glbuf reads the
-     *  client sockets in large chunks instead (7.1 GLES 2/3 scenes were bound by those reads) */
-    private fun glServerEnv(): Map<String, String> {
-        val buf = paths.nativeBin("libglbuf.so")
-        return if (buf.isFile) mapOf("LD_PRELOAD" to buf.absolutePath) else emptyMap()
+        log("native arm64: graphics are served by the engine's own HALs")
     }
 
     /** guest files this kernel ships (asset names) */
     private val engineFiles: Set<String> by lazy { listOf("engines/n64-${kernel.tag}", kernel.gsiAssets).flatMap { runCatching { EngineAssets.list(ctx, it) }.getOrNull().orEmpty().asList() }.toSet() }
 
-    private val n64Has32: Boolean get() = paths.nativeBin("libqemu_arm.so").canExecute() &&
-            File(paths.root, "system/bin/app_process32").isFile
+    private val n64Has32: Boolean get() = false
 
-    val glInApp: Boolean get() = engine == Engine.KK && GlBridge.running()
+    val glInApp: Boolean get() = false
 
     private fun startService(svc0: GuestService, propsFile: File? = null) {
         // The second zygote is of the other word size than the first. A firmware that ships all three zygote rc files
@@ -710,7 +624,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             return
         }
         if (engine == Engine.N64 && ((svc.name == "zygote_secondary" && !n64Has32) || svc.argv.first().substringAfterLast('/') in N64_SKIP)) return
-        if (engine == Engine.N64 && !paths.nativeBin("libqemu_arm.so").canExecute() && !runsNatively(File(paths.root, svc.argv.first().removePrefix("/")))) {
+        if (engine == Engine.N64 && !runsNatively(File(paths.root, svc.argv.first().removePrefix("/")))) {
             log("· ${svc.name}: 32-bit program, skipped by the native arm64 engine")
             return
         }
@@ -1239,7 +1153,6 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
         killLeftovers()
     }
 
-    /** Добивает процессы гостя, оставшиеся от прошлых запусков (qemu, binderd, dhdrun). */
     fun killLeftovers(): Int {
         val mine = AProcess.myPid()
         var n = 0
@@ -1247,8 +1160,7 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
             val pid = d.name.toIntOrNull() ?: return@forEach
             if (pid == mine) return@forEach
             val cmd = runCatching { String(File(d, "cmdline").readBytes(), Charsets.ISO_8859_1).replace('\u0000', ' ') }.getOrNull() ?: return@forEach
-            val ours = cmd.contains("libaemu64") || cmd.contains("libbinderd64") || (cmd.contains("/images/") && (cmd.contains("libqemu") || cmd.contains("libbinderd") || cmd.contains("libdhdrun") || cmd.contains("libglserverd"))) ||
-                cmd.startsWith("${ctx.packageName}:binder") || cmd.startsWith("${ctx.packageName}:gl")
+            val ours = cmd.contains("libaemu64") || cmd.contains("libbinderd64")
             if (ours) { runCatching { AProcess.sendSignal(pid, 9) }; n++ }
         }
         if (n > 0) log("cleaned up processes from previous run: $n")

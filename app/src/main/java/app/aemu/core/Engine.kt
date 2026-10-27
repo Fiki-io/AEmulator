@@ -11,48 +11,21 @@ package app.aemu.core
 enum class Engine(
     val id: String,
     val title: String,
-    val qemu: String,
-    val binderd: String,
-    val glserverd: String,
-    val runner: String,
-    /** гостевая реализация EGL/GLES: имя в assets → имя в /system/lib/egl */
-    val guestGles: String,
+    val qemu: String = "",
+    val binderd: String = "",
+    val glserverd: String = "",
+    val runner: String = "",
+    val guestGles: String = "",
 ) {
-    GB(
-        id = "gb",
-        title = "Fallback for 2.x",
-        qemu = "libqemu_gb.so",
-        binderd = "libbinderd_gb.so",
-        glserverd = "libglserverd_gb.so",
-        runner = "libdhdrun_gb.so",
-        guestGles = "libGLES_dhd.so",
-    ),
-    KK(
-        id = "kk",
-        title = "Universal (2.3–7.x)",
-        qemu = "libqemu_kk.so",
-        binderd = "libbinderd_kk.so",
-        glserverd = "libglserverd_kk.so",
-        runner = "libdhdrun_kk.so",
-        guestGles = "libGLES.so",
-    ),
-    /** arm64 firmware on an arm64 phone: the guest's own code runs natively (native/guest64), no translator. */
+    /** Native arm64 GSI execution on host ARM64 CPU without translator/QEMU */
     N64(
         id = "n64",
-        title = "Native arm64",
-        qemu = "",      // per Android generation: see Kernel64
-        binderd = "",
-        glserverd = "",
-        runner = "",
-        guestGles = "",
+        title = "Native arm64 (GSI)",
     );
 
     companion object {
-        /**
-         * KK — универсальный: GL-мост в приложении (быстрее) и полный GLES 1/2/3, работает и с 2.3.
-         * GB остаётся запасным (выбирается в настройках образа).
-         */
-        fun forApi(api: Int): Engine = KK
-        fun byId(id: String?): Engine = entries.firstOrNull { it.id == id } ?: KK
+        fun forApi(api: Int): Engine = N64
+        fun byId(id: String?): Engine = N64
     }
 }
+

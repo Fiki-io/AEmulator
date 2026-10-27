@@ -184,12 +184,9 @@ data class GuestImage(
 ) {
     val displayVersion: String get() = "Android $release (API $api)"
 
-    /** Движок с учётом выбора пользователя. */
-    fun effective(): GuestImage = copy(engine = when {
-        abi == "arm64-v8a" -> Engine.N64
-        settings.legacyEngine && api < 14 -> Engine.GB
-        else -> Engine.KK
-    })
+    /** Pure arm64 native GSI engine. */
+    fun effective(): GuestImage = copy(engine = Engine.N64, abi = "arm64-v8a")
+
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("release", release).put("api", api)

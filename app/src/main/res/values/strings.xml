@@ -5,7 +5,7 @@
     <string name="channel_vm">Running system</string>
     <string name="vm_running">%1$s is running</string>
     <string name="vm_running_hint">Tap to return to the system screen</string>
-    <string name="lib_subtitle">Classic Android firmware on a modern phone</string>
+    <string name="lib_subtitle">Android 9–17 ARM64 GSI on modern phone</string>
     <string name="help">Supported files</string>
     <string name="add_firmware">Add firmware</string>
     <string name="settings">Settings</string>
@@ -19,7 +19,7 @@
     <string name="storage_text">Allow access to all files: then each system’s memory card lives in the AEmulator folder of internal storage — handy for APKs, music and photos.</string>
     <string name="allow">Allow</string>
     <string name="empty_title">No systems yet</string>
-    <string name="empty_text">Add an ARM firmware for Android 2.3–6.0: a recovery ZIP, an Odin archive (.tar.md5), system.img or a factory image.</string>
+    <string name="empty_text">Add an arm64 Generic System Image (GSI) for Android 9–17: system.img, system.img.xz, system.img.gz, or a ZIP archive.</string>
     <string name="empty_help">Which files work?</string>
     <string name="import_failed">Import failed</string>
     <string name="import_running">Importing firmware</string>
@@ -31,7 +31,7 @@
     <string name="start">Start</string>
     <string name="rename">Rename</string>
     <string name="help_title">Supported firmware</string>
-    <string name="help_text">• Android 2.3–4.4: 32-bit ARM firmware, runs through QEMU.\n• Android 5.0–17: arm64 firmware and GSIs, run natively on the phone.\n\nFormats:\n• CWM/TWRP recovery ZIP (MIUI, CyanogenMod, ports, most custom ROMs);\n• Samsung: Odin .tar / .tar.md5 or a ZIP with AP_*.tar.md5;\n• Google factory images (.tgz / .zip);\n• system.img (ext4, sparse), TWRP backup system.ext4.win;\n• OTA with system.new.dat(.br) + system.transfer.list.\n\nBest if the archive contains boot.img: the service start order is taken from it.</string>
+    <string name="help_text">• Android 9.0–17 (API 28–37): arm64 Generic System Images (GSI), runs natively on phone CPU without emulation.\n\nFormats:\n• system.img (raw ext4 or Android sparse image);\n• system.img.xz / system.img.gz / system.img.bz2 / system.img.lz4;\n• ZIP or TAR containing system.img;\n• Google factory images and OTA packages.</string>
     <string name="vs_screen">Guest screen</string>
     <string name="vs_fixed_2x">Android 2.x uses a fixed 480×800 screen at 240 dpi.</string>
     <string name="vs_screen_hint">A smaller screen makes the system faster.</string>

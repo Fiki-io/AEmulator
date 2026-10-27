@@ -32,14 +32,6 @@ enum class Kernel64(
     /** the emulated volume is announced again when the user starts: the storage service of 13+ drops a volume that
      *  shows up before the user's media provider is known ("does not support external storage") */
     val volumeAtUserStart: Boolean = false,
-    /** the name in system/lib/egl under which 32-bit programs find libGLES_route (native/glroute): their own drawing
-     *  goes to the phone's GPU through the 4.4 engine's bridge (served by glserverd), hwui stays on SwiftShader. They run in the translator, where a software renderer gives about
-     *  one frame a second. null: this kernel has no bridge and they draw with its software renderer. */
-    val gpuBridge32: String? = null,
-    /** 32-bit programs get the open bridge (native/glbridge, armv7) under that name instead of glroute: hwui and
-     *  Chromium draw on the phone's GPU too (the 4.4 engine's closed bridge has no EGLImage of a texture), with the
-     *  engine's 32-bit SwiftShader behind it */
-    val gpuBridge32Open: Boolean = false,
     /**
      * SurfaceFlinger is told to compose every layer itself (its own debug call 1008). 11: over the 8.1 composer
      * service its layers stay "device" ones, which the framebuffer composer never draws: a black screen.
@@ -215,72 +207,7 @@ enum class Kernel64(
      *  side at all: from 12 on the system has no VNDK the 8.1-built HALs of the base set could link against. */
     val ownVendorUnderGsi: Boolean = false,
 ) {
-    // Android 5.0: starts as kernel 23
-    A5_0("21", 21..21, registeredNetwork = true, eglCfgTags = true, trafficAccounting = true, treble = false, eglDir = "system/lib64/egl", gles = "1", absentFeatures = emptyList(),
-        procFiles = mapOf("asound/cards" to "--- no soundcards ---\n")),
-    // Android 5.1: starts as kernel 23. A board's own infrared HAL (consumerir.<board>.so) is set aside with the other
-    // vendor HALs, and 5.1 takes "feature declared, HAL missing" for fatal.
-    A5_1("22", 22..22, registeredNetwork = true, dnsLayoutProbe = true, exynosHandles = true, wideAudioFormat = true, bootImageInCache = true, ethernetStandIn = true, eglCfgTags = true, taskMapsIsSelfMaps = true, trafficAccounting = true, treble = false, eglDir = "system/lib64/egl", gles = "1",
-        absentFeatures = listOf("consumerir"),
-        standInServices = mapOf("Exynos.HWCService" to "system/lib64/libsurfaceflinger.so"),
-        sysFiles = mapOf(
-            "power/cpufreq_table" to "1500000 1400000 1300000 1200000 1100000 1000000 900000 800000 700000 600000 500000 400000\n",
-            "devices/14ac0000.mali/dvfs_table" to "772 700 600 544 420 350 266\n",
-            "devices/platform/exynos7-devfreq-mif/devfreq/exynos7-devfreq-mif/available_frequencies" to
-                "1552000 1456000 1264000 1068000 828000 676000 543000 416000 348000 276000\n",
-            "devices/platform/exynos5-devfreq-mif/devfreq/exynos5-devfreq-mif/available_frequencies" to
-                "825000 728000 633000 543000 413000 275000 206000 165000 138000\n"),
-        procFiles = mapOf("asound/cards" to "--- no soundcards ---\n")),
-    // Android 6.0
-    A6("23", 23..23, gpuBridge32 = "libGLES.so", gpuBridge32Open = true, gpuBridge64 = true, gpuBridgeMode = "3", registeredNetwork = true, exynosHandles = true, irFollowsHal = true, wideAudioFormat = true, xmlSettings = true, bootImageInCache = true, ethernetStandIn = true, treble = false, eglDir = "system/lib64/egl", gles = "1", absentFeatures = emptyList(),
-        // Qualcomm's boot animation (MIUI 9) reads the list of sound cards and takes a missing file for an open one
-        // (it dies at once and the boot goes on without an animation); the phone's own list is not readable
-        procFiles = mapOf("asound/cards" to "--- no soundcards ---\n"),
-        // The storage the engine's vold announces is an emulated one. A firmware that kept the SDK emulator's
-        // init.goldfish.rc (TouchWiz) declares the primary storage physical there, and its storage service then
-        // never mounts the emulated volume: no /sdcard for the apps.
-        props = mapOf("ro.vold.primary_physical" to "0")),
-    // Android 7.0: starts as kernel 23
-    A7_0("24", 24..24, registeredNetwork = true, qcomHandles = true, irFollowsHal = true, xmlSettings = true, treble = false, eglDir = "system/lib64/egl", gles = "1", absentFeatures = emptyList(),
-        eglName = "emulation",
-        procFiles = mapOf("asound/cards" to "--- no soundcards ---\n")),
-    // Android 7.1: starts as kernel 23
-    A7_1("25", 25..25, gpuBridge64 = true, gpuBridgeMode = "1", bridgeAsEmulation = true, registeredNetwork = true, qcomHandles = true, irFollowsHal = true, xmlSettings = true, treble = false, eglDir = "system/lib64/egl", gles = "1", absentFeatures = emptyList(),
-        eglName = "emulation",
-        procFiles = mapOf("asound/cards" to "--- no soundcards ---\n"),
-        // The first boot runs dex2oat over every app that came without compiled code (Google's apps on Xperia), one
-        // by one, and the 32-bit ones through the translator: minutes on the boot screen. Verification is left to
-        // ART at run time.
-        props = mapOf("pm.dexopt.first-boot" to "verify-at-runtime", "pm.dexopt.boot" to "verify-at-runtime")),
-    // Android 8.0: starts as kernel 27
-    A8_0("26", 26..26, gpuBridge64 = true, bridgeAsEmulation = true, emulationDir = "system/lib64/egl", navBarRequired = true, audioPolicyXml = true, webViewSingleProcess = true, registeredNetwork = true, treble = true, eglDir = "vendor/lib64/egl", gles = "2",
-        absentFeatures = listOf("consumerir", "fingerprint", "nfc", "nfc.hce", "nfc.hcef"), trafficAccounting = true, noQemuPipe = true,
-        // 8.0's Skia pipeline of hwui is experimental and stops system_server with "GL errors!" (SkiaOpenGLPipeline):
-        // 8.0 draws with its OpenGL pipeline
-        props = mapOf("ro.treble.enabled" to "false", "debug.hwui.renderer" to "opengl"),
-        // The engine's codec service is the 64-bit one of the emulator image, whose codec library a phone's system of
-        // 8.0 has only as a 32-bit build: a firmware with its own vendor side keeps its own (32-bit) service.
-        firmwareOwn = listOf("vendor#bin#hw#android.hardware.media.omx@1.0-service", "vendor#etc#init#android.hardware.media.omx@1.0-service.rc",
-            "vendor#lib#libmediacodecservice.so")),
-    // Android 8.1
-    A8_1("27", 27..27, gpuBridge64 = true, bridgeAsEmulation = true, qcomHandles = true, webViewSingleProcess = true, registeredNetwork = true, treble = true, eglDir = "vendor/lib64/egl", gles = "2",
-        // MIUI's system_server reads the panel colour from the touch controller's lockdown bytes before anything else
-        // and dies closing the reader it never opened when the file is not there
-        procFiles = mapOf("tp_lockdown_info" to "4636320131320200\n"),
-        absentFeatures = listOf("consumerir", "fingerprint", "nfc", "nfc.hce", "nfc.hcef"), trafficAccounting = true, noQemuPipe = true,
-        // The framework calls a Treble device consistent only after checking the running kernel (its SELinux policy
-        // version, release and build options) against its certification list. There is no SELinux for the guest and
-        // the kernel is the phone's, so that check cannot be passed: the device is declared as not certified, which
-        // is all this property means to 8.x (the linker and HIDL do not read it).
-        // Qualcomm's Wi-Fi service sets a property whose name the old protocol (31 characters) cannot carry, and
-        // system_server dies in its constructor.
-        // A vendor build's first boot compiles every app that came without compiled code (Google's ones on MIUI):
-        // five minutes on the boot screen. They are only unpacked; ART verifies at run time.
-        props = mapOf("ro.treble.enabled" to "false", "ro.property_service.version" to "2",
-            "pm.dexopt.first-boot" to "extract", "pm.dexopt.boot" to "extract")),
-    // Android 9 over the vendor side of 8.1, which is what a generic system image of 9 is made for: the HALs are the
-    // ones of kernel 27 (copied, so that the two can part), and the system finds its copy of their libraries by the
-    // VNDK version the vendor side declares.
+    // Android 9 (GSI official standard start)
     A9("28", 28..28, gpuBridge64 = true, webView64 = true, bridgeAsEmulation = true, qcomHandles = true, webViewSingleProcess = true, registeredNetwork = true, treble = true, eglDir = "vendor/lib64/egl", gles = "2",
         // (MIUI's system_server and the touch controller's lockdown bytes: as on 8.1)
         procFiles = mapOf("tp_lockdown_info" to "4636320131320200\n"),
@@ -576,6 +503,7 @@ enum class Kernel64(
 
     companion object {
         /** A release nobody has brought up yet runs on the nearest older kernel. */
-        fun forApi(api: Int): Kernel64 = entries.firstOrNull { api in it.apis } ?: entries.lastOrNull { api > it.apis.last } ?: A6
+        fun forApi(api: Int): Kernel64 = entries.firstOrNull { api in it.apis } ?: entries.lastOrNull { api > it.apis.last } ?: A9
     }
 }
+

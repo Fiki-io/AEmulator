@@ -47,8 +47,7 @@ class Analyzer(private val ctx: Context, private val paths: VmPaths, private val
         val brand = (product("brand") ?: product("manufacturer") ?: "").replaceFirstChar { it.uppercase() }
         val model = product("model") ?: product("device") ?: "Android"
         for (what in listOf("brand", "manufacturer")) product(what)?.let { ident.putIfAbsent("ro.product.$what", it) }
-        val skin = skin(ident)
-        val abi = all["ro.product.cpu.abi"] ?: "armeabi-v7a"
+        val abi = all["ro.product.cpu.abi"] ?: "arm64-v8a"
 
         // init.rc и его import’ы лежат в корне рамдиска
         val rcFiles = (root.listFiles()?.filter { it.isFile && it.name.endsWith(".rc") }?.sortedBy { if (it.name == "init.rc") 0 else 1 } ?: emptyList()) +
@@ -79,25 +78,12 @@ class Analyzer(private val ctx: Context, private val paths: VmPaths, private val
         val warnings = ArrayList<String>()
         if (noBuildProp) warnings += "No system/build.prop: Android version was inferred from the system tree."
         if (rcFiles.isEmpty() && dhdBcp == null) warnings += "No boot.img in firmware: boot plan and BOOTCLASSPATH were guessed."
-        if (abi.startsWith("arm64") && api != 23) warnings += "64-bit firmware: the native arm64 engine is tuned for Android 6.0; other versions are experimental."
-        if (abi.startsWith("x86") || abi.startsWith("mips")) warnings += "Firmware is not ARM ($abi) and will not run."
-        if (api >= 21) warnings += "Android ${release}: support is experimental (ART, SELinux)."
+        if (!abi.startsWith("arm64")) warnings += "Firmware ABI is $abi. Pure 64-bit ARM64 engine requires arm64-v8a."
+        if (api < 28) warnings += "Android $release (API $api): Only GSI Android 9 (API 28) to 17 (API 37) are supported."
 
-        val density = all["ro.sf.lcd_density"]?.toIntOrNull() ?: 240
-        val engine = Engine.forApi(api)
-        val settings = when {
-            engine == Engine.GB || api < 14 -> VmSettings(width = 480, height = 800, density = 240, fbHz = 60, touchHz = 60)
-            // 540×960 — лучший баланс скорости и чёткости под эмуляцией; поменять можно в настройках
-            density <= 160 -> VmSettings(width = 480, height = 800, density = 240)
-            // a firmware made for a QHD panel (560 dpi and up) may have no layout that fits an hdpi screen: the Galaxy
-            // S6 launcher on 5.x gets a zero-wide item at 540×960/240 and dies in a loop; 720×1280/320 is the smallest
-            // screen it was checked on
-            density >= 560 -> VmSettings(width = 720, height = 1280, density = 320)
-            // MIUI's live icons (Calendar, Weather: fancy_icons in the icon theme) have pictures for 440/480 only and
-            // draw nothing at 240; its phones are xxhdpi, so it gets the phone's own screen
-            skin.startsWith("MIUI") && api >= 21 -> VmSettings(width = 1080, height = 1920, density = 480)
-            else -> VmSettings(width = 540, height = 960, density = 240)
-        }
+        val density = all["ro.sf.lcd_density"]?.toIntOrNull() ?: 420
+        val engine = Engine.N64
+        val settings = VmSettings(width = 1080, height = 1920, density = density)
 
         writePropsTemplate(deflt, build, api, engine, rc.setprops)
 
@@ -315,8 +301,7 @@ class Analyzer(private val ctx: Context, private val paths: VmPaths, private val
         add("ro.revision", "0")
         add("ro.factorytest", "0")
         add("ro.setupwizard.mode", "DISABLED")
-        add("ro.kernel.android.checkjni", "0")
-        add("ro.opengles.version", if (engine == Engine.KK) "131072" else "131072")
+        add("ro.opengles.version", "196608")
         add("keyguard.no_require_sim", "1")
         add("ro.radio.noril", "false")
         add("dalvik.vm.stack-trace-file", "/data/anr/traces.txt")

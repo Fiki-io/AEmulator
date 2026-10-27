@@ -97,16 +97,9 @@ fun SettingsSheet(img: GuestImage, onDismiss: () -> Unit, onSave: (VmSettings) -
 
             Text(stringResource(R.string.vs_perf), style = MaterialTheme.typography.titleMedium)
             Toggle(stringResource(R.string.vs_gpu), stringResource(R.string.vs_gpu_sub), s.gpu) { s = s.copy(gpu = it) }
-            if (img.api >= 14) Toggle(stringResource(R.string.vs_hwui), stringResource(R.string.vs_hwui_sub), s.hwui) { s = s.copy(hwui = it) }
+            Toggle(stringResource(R.string.vs_hwui), stringResource(R.string.vs_hwui_sub), s.hwui) { s = s.copy(hwui = it) }
             Toggle(stringResource(R.string.vs_jit), stringResource(R.string.vs_jit_sub), s.jit) { s = s.copy(jit = it) }
-            if (img.api >= 21) Toggle(stringResource(R.string.vs_fulldex), stringResource(R.string.vs_fulldex_sub), s.fullDexopt) { s = s.copy(fullDexopt = it) }
-            if (img.api < 14) Toggle(stringResource(R.string.vs_legacy), stringResource(R.string.vs_legacy_sub), s.legacyEngine) { s = s.copy(legacyEngine = it) }
-            val has32 = CpuInfo.hasAArch32
-            Toggle(
-                stringResource(R.string.vs_native32),
-                if (has32) stringResource(R.string.vs_native32_sub) else stringResource(R.string.vs_native32_unsupported),
-                s.native32 && has32
-            ) { if (has32) s = s.copy(native32 = it) }
+            Toggle(stringResource(R.string.vs_fulldex), stringResource(R.string.vs_fulldex_sub), s.fullDexopt) { s = s.copy(fullDexopt = it) }
             val ramIdx = RAM_STEPS.indexOf(s.ramMb).coerceAtLeast(0)
             ListItem(
                 headlineContent = { Text(stringResource(R.string.vs_ram)) },
@@ -132,14 +125,6 @@ fun SettingsSheet(img: GuestImage, onDismiss: () -> Unit, onSave: (VmSettings) -
                 TextButton(onClick = { s = s.copy(imei = VmSettings.randomImei()) }) { Text(stringResource(R.string.vs_random)) }
             }
 
-            Spacer(Modifier.height(8.dp))
-            Text(stringResource(R.string.vs_advanced), style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(value = s.qemuArgs, onValueChange = { s = s.copy(qemuArgs = it) },
-                label = { Text(stringResource(R.string.vs_qemu_args)) }, supportingText = { Text(stringResource(R.string.vs_qemu_args_sub)) },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
-
-            Spacer(Modifier.height(8.dp))
-            RecoverySection(img)
 
             Spacer(Modifier.height(8.dp))
             Text(stringResource(R.string.vs_controls), style = MaterialTheme.typography.titleMedium)
@@ -198,51 +183,4 @@ private fun NumField(label: String, value: Int, modifier: Modifier, set: (Int) -
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
 }
 
-/** Recovery of this firmware: stock one from the import, or a custom recovery.img (TWRP, OrangeFox, CWM…). */
-@Composable
-private fun RecoverySection(img: GuestImage) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val paths = remember(img.id) { app.aemu.core.VmPaths(ctx, img.id) }
-    var status by remember { mutableStateOf(recoveryStatus(paths)) }
-    var busy by remember { mutableStateOf(false) }
-    val failed = stringResource(R.string.vs_recovery_failed)
-    val pick = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        busy = true
-        Thread {
-            val ok = runCatching {
-                val data = ctx.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-                app.aemu.core.RecoveryImage.install(paths, data) {}
-            }.getOrDefault(false)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                busy = false
-                status = recoveryStatus(paths)
-                if (!ok) android.widget.Toast.makeText(ctx, failed, android.widget.Toast.LENGTH_LONG).show()
-            }
-        }.start()
-    }
-    Text(stringResource(R.string.vs_recovery), style = MaterialTheme.typography.titleMedium)
-    ListItem(
-        headlineContent = { Text(status ?: stringResource(R.string.vs_recovery_none)) },
-        supportingContent = { Text(stringResource(R.string.vs_recovery_sub)) },
-        trailingContent = {
-            TextButton(enabled = !busy, onClick = { pick.launch(arrayOf("*/*")) }) { Text(stringResource(R.string.vs_recovery_install)) }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-    )
-}
 
-private fun recoveryStatus(paths: app.aemu.core.VmPaths): String? {
-    if (!app.aemu.core.RecoveryImage.installed(paths)) return null
-    val dir = app.aemu.core.RecoveryImage.dir(paths)
-    val prop = runCatching { java.io.File(dir, "default.prop").readText() }.getOrDefault("")
-    val twrp = Regex("""ro\.twrp\.version=(\S+)""").find(prop)?.groupValues?.get(1)
-    return when {
-        twrp != null -> "TWRP $twrp"
-        java.io.File(dir, "twres").isDirectory -> "TWRP"
-        java.io.File(dir, "sbin/orangefox.sh").exists() || prop.contains("orangefox", true) -> "OrangeFox"
-        prop.contains("cwm", true) || java.io.File(dir, "res/images/icon_clockwork.png").exists() -> "ClockworkMod"
-        else -> "Stock recovery"
-    }
-}

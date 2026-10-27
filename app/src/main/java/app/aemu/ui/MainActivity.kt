@@ -327,14 +327,12 @@ private fun ContainerDialog(
     var copy by remember { mutableStateOf(false) }
     var preset by remember { mutableStateOf(1) } // 0: Perf, 1: Balanced, 2: Lite
     var settings by remember(from) { mutableStateOf(from.settings) }
-    val has32 = app.aemu.core.CpuInfo.hasAArch32
-
     fun applyPreset(p: Int) {
         preset = p
         settings = when (p) {
-            0 -> settings.copy(gpu = true, hwui = true, jit = true, lowRam = false, native32 = has32)
-            1 -> settings.copy(gpu = true, hwui = true, jit = true, lowRam = false, native32 = false)
-            else -> settings.copy(gpu = false, hwui = false, jit = true, lowRam = true, width = 480, height = 800, native32 = false)
+            0 -> settings.copy(gpu = true, hwui = true, jit = true, lowRam = false)
+            1 -> settings.copy(gpu = true, hwui = true, jit = true, lowRam = false)
+            else -> settings.copy(gpu = false, hwui = false, jit = true, lowRam = true, width = 720, height = 1280)
         }
     }
 
@@ -425,21 +423,6 @@ private fun ContainerDialog(
                 ) {
                     Checkbox(copy, { copy = it })
                     Text(stringResource(R.string.container_copy_data), style = MaterialTheme.typography.bodyMedium)
-                }
-
-                if (has32) {
-                    Row(
-                        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).clickable {
-                            settings = settings.copy(native32 = !settings.native32)
-                        },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(settings.native32, { settings = settings.copy(native32 = it) })
-                        Column(Modifier.weight(1f)) {
-                            Text(stringResource(R.string.vs_native32), style = MaterialTheme.typography.bodyMedium)
-                            Text(stringResource(R.string.vs_native32_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
                 }
 
                 Text(

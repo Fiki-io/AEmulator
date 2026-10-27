@@ -83,14 +83,6 @@
                 android:value="Keeps the emulated Android system running" />
         </service>
 
-        <service
-            android:name="dev.lk.dhd.BinderSlot"
-            android:exported="false"
-            android:process=":binder" />
-        <service
-            android:name="dev.lk.dhd.GlSlot"
-            android:exported="false"
-            android:process=":gl" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
