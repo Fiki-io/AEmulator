@@ -648,54 +648,6 @@ class TreeFixer(
     private fun installEngineFiles() {
         installNative64()
     }
-        if (File(root, "system/lib64").isDirectory) {
-            val cam64 = File(root, "system/lib64/hw/camera.default.so")
-            val vcam64 = File(root, "vendor/lib64/hw/camera.default.so")
-            runCatching {
-                // a kernel of the native engine may bring its own build of the HAL
-                val asset64 = (if (engine == Engine.N64) kernel.assets.reversed() else emptyList()).map { "$it/system#lib64#hw#camera.default.so" }
-                    .firstOrNull { a -> runCatching { check(EngineAssets.exists(ctx, a)) }.isSuccess } ?: "engines/common/camera.default64.so"
-                val size64 = EngineAssets.size(ctx, asset64)
-                if (!cam64.exists() || cam64.length() != size64) {
-                    cam64.parentFile?.mkdirs()
-                    EngineAssets.open(ctx, asset64).use { i -> cam64.outputStream().use { o -> i.copyTo(o) } }
-                    cam64.setReadable(true, false)
-                }
-                if (File(root, "vendor/lib64/hw").isDirectory && (!vcam64.exists() || vcam64.length() != cam64.length())) {
-                    cam64.copyTo(vcam64, overwrite = true)
-                }
-            }
-        }
-        linkerLibRange()
-        // вендорские драйверы RenderScript (Adreno, Mali…) лезут в GPU; без них libRS берёт процессорный
-        for (dir in listOf("system/lib", "vendor/lib", "system/vendor/lib")) {
-            File(root, dir).listFiles()?.filter { it.name.startsWith("libRSDriver_") }?.forEach { f ->
-                val parked = File(root, "system/.aemu-parked/${f.relativeTo(root).path.replace('/', '#')}")
-                parked.parentFile?.mkdirs()
-                if (f.renameTo(parked)) log("RenderScript: removed vendor driver ${f.name}")
-            }
-        }
-        // netfilter в эмуляторе нет: iptables всегда падает, а netd 4.x (Samsung) считает это фатальным
-        // для NetworkManagementService/ConnectivityService — ставим пустую программу, родную прячем
-        val trueSize = runCatching { EngineAssets.size(ctx, "engines/common/aemu_true.so") }.getOrDefault(-1L)
-        // MIUI: invoke-as runs FirewallService's iptables loop as root; under qemu that shell never sees its
-        // children exit, so ConnectivityService (and the whole boot) hangs in CommandLineUtils.waitFor
-        val fakes = listOf("bin/iptables", "bin/ip6tables") + if (img.skin.contains("MIUI", true)) listOf("xbin/invoke-as") else emptyList()
-        for (rel in fakes) {
-            val n = rel.substringAfter('/')
-            val f = File(root, "system/$rel")
-            if (!f.exists() && !isLink(f) || trueSize < 0 || (!isLink(f) && f.length() == trueSize)) continue
-            runCatching {
-                val parked = File(root, "system/.aemu-parked/system#${rel.replace('/', '#')}")
-                parked.parentFile?.mkdirs()
-                if (isLink(f)) Os.remove(f.absolutePath) else if (!parked.exists()) f.renameTo(parked) else f.delete()
-                EngineAssets.open(ctx, "engines/common/aemu_true.so").use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-                f.setReadable(true, false); f.setExecutable(true, false)
-                copied++
-            }.onFailure { log("$n not replaced: ${it.message}") }
-        }
-        if (copied > 0) log("engine ${engine.id} files updated: $copied")
-    }
 
     /**
      * The 2.x linker gives libraries that are not prelinked addresses from a fixed range of its own. AOSP's is

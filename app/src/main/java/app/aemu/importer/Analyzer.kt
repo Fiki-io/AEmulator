@@ -48,6 +48,7 @@ class Analyzer(private val ctx: Context, private val paths: VmPaths, private val
         val model = product("model") ?: product("device") ?: "Android"
         for (what in listOf("brand", "manufacturer")) product(what)?.let { ident.putIfAbsent("ro.product.$what", it) }
         val abi = all["ro.product.cpu.abi"] ?: "arm64-v8a"
+        val skin = skin(all)
 
         // init.rc и его import’ы лежат в корне рамдиска
         val rcFiles = (root.listFiles()?.filter { it.isFile && it.name.endsWith(".rc") }?.sortedBy { if (it.name == "init.rc") 0 else 1 } ?: emptyList()) +
