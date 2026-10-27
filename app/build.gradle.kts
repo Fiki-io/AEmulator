@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.security.MessageDigest
+import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -14,8 +15,8 @@ val signProps = Properties().apply {
 }
 val canSign = signProps.getProperty("storeFile")?.let { rootProject.file(it).isFile } == true
 
-// Engine guest files: every kernel carries its own copy of most of them (473 MB, 110 MB of it different, all stored
-// uncompressed because of their names). The APK gets each content once, compressed, as assets/blobs/<sha1>, plus
+// Engine guest files: stored as individual zip archives per folder (common.zip, n64-*.zip)
+// or uncompressed directories. The APK gets each content once, compressed, as assets/blobs/<sha1>, plus
 // assets/engines.idx ("path<TAB>sha1<TAB>size"); the app reads them through core/EngineAssets.kt
 val engineSrc = file("src/main/assets/engines")
 val engineOut = layout.buildDirectory.dir("generated/engineAssets")
@@ -27,13 +28,37 @@ val packEngines = tasks.register("packEngines") {
         o.deleteRecursively()
         File(o, "blobs").mkdirs()
         val idx = StringBuilder()
-        engineSrc.walkTopDown().filter { it.isFile }.sortedBy { it.invariantSeparatorsPath }.forEach { f ->
-            val sha = MessageDigest.getInstance("SHA-1").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+        val processedRel = HashSet<String>()
+
+        fun addEntry(rel: String, bytes: ByteArray) {
+            if (!processedRel.add(rel)) return
+            val sha = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }
             val b = File(o, "blobs/$sha")
-            if (!b.exists()) f.copyTo(b)
-            val rel = f.relativeTo(engineSrc).path.replace('\\', '/')
-            idx.append("engines/$rel\t$sha\t${f.length()}\n")
+            if (!b.exists()) b.writeBytes(bytes)
+            idx.append("$rel\t$sha\t${bytes.size}\n")
         }
+
+        // Process uncompressed directories first (if unzipped during local dev / inspection)
+        engineSrc.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name }?.forEach { dir ->
+            dir.walkTopDown().filter { it.isFile }.sortedBy { it.invariantSeparatorsPath }.forEach { f ->
+                val rel = "engines/" + f.relativeTo(engineSrc).path.replace('\\', '/')
+                addEntry(rel, f.readBytes())
+            }
+        }
+
+        // Process zip archives (common.zip -> engines/common/*, n64-28.zip -> engines/n64-28/*, etc.)
+        engineSrc.listFiles()?.filter { it.isFile && it.name.endsWith(".zip") }?.sortedBy { it.name }?.forEach { zfFile ->
+            val folderName = zfFile.name.removeSuffix(".zip")
+            ZipFile(zfFile).use { zf ->
+                val entries = zf.entries().toList().filter { !it.isDirectory }.sortedBy { it.name }
+                for (entry in entries) {
+                    val rel = "engines/$folderName/${entry.name.replace('\\', '/')}"
+                    val bytes = zf.getInputStream(entry).use { it.readBytes() }
+                    addEntry(rel, bytes)
+                }
+            }
+        }
+
         File(o, "engines.idx").writeText(idx.toString())
     }
 }

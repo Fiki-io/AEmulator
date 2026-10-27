@@ -409,6 +409,26 @@ class GuestVm(val ctx: Context, val img: GuestImage) {
                 overrides["ro.vendor.build.fingerprint"] = fp; overrides["ro.bootimage.build.fingerprint"] = fp
             }
         }
+        // Spoof certified Google Pixel release keys on generic GSI to pass Play Protect & enable Google Play Services / Gmail
+        val sysFp = runCatching { PropArea.parseProps(File(paths.root, "system/build.prop").readText())["ro.system.build.fingerprint"] ?: "" }.getOrDefault("")
+        if (sysFp.contains("userdebug") || sysFp.contains("dev-keys") || sysFp.contains("gsi_") || img.skin == "AOSP") {
+            val pixelFp = when (img.api) {
+                28 -> "google/crosshatch/crosshatch:9/PQ3A.190801.002/5672909:user/release-keys"
+                29 -> "google/coral/coral:10/QQ3A.200805.001/6578210:user/release-keys"
+                30 -> "google/redfin/redfin:11/RQ3A.211001.001/7641976:user/release-keys"
+                31, 32 -> "google/oriole/oriole:12/SQ3A.220705.004/8836240:user/release-keys"
+                33 -> "google/cheetah/cheetah:13/TQ3A.230901.001/10750268:user/release-keys"
+                34 -> "google/husky/husky:14/UQ1A.240205.004/11269751:user/release-keys"
+                else -> "google/caiman/caiman:15/AP3A.241005.015/12400578:user/release-keys"
+            }
+            overrides["ro.build.fingerprint"] = pixelFp
+            overrides["ro.bootimage.build.fingerprint"] = pixelFp
+            overrides["ro.vendor.build.fingerprint"] = pixelFp
+            overrides["ro.build.tags"] = "release-keys"
+            overrides["ro.build.type"] = "user"
+            overrides["ro.product.brand"] = "google"
+            overrides["ro.product.manufacturer"] = "Google"
+        }
         if (!props.prepare(overrides, later, if (engine == Engine.N64) kernel.propAreaSize else PropArea.SIZE)) error("property area not ready")
         fixer.skipPreBoot(props)
         fixer.noScreenSleep()
